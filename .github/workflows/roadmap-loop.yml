@@ -1,0 +1,119 @@
+name: Roadmap Loop
+
+on:
+  schedule:
+    # Run Mon-Fri 01:00 UTC (KST 10:00 — ready when you arrive at work)
+    - cron: '0 1 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Command to run (default: /roadmap continue)'
+        required: false
+        default: '/roadmap continue'
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  roadmap:
+    name: Roadmap Sprint Loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          command -v jq || (sudo apt-get update -q && sudo apt-get install -y jq)
+
+      - name: Configure git
+        run: |
+          git config user.email "sprint-system[bot]@users.noreply.github.com"
+          git config user.name "sprint-system[bot]"
+
+      - name: Verify audit chain
+        run: |
+          if [[ -f .audit/events.jsonl ]]; then
+            bash .claude/bin/audit-verify.sh
+          else
+            echo "No audit log yet — first run"
+          fi
+
+      - name: Run roadmap command
+        id: roadmap
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          CMD="${{ github.event.inputs.command || '/roadmap continue' }}"
+          echo "Running: $CMD"
+
+          # Run Claude Code in headless mode
+          claude --headless -p "$CMD" 2>&1 | tee /tmp/roadmap-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+
+          if [[ $EXIT_CODE -eq 2 ]]; then
+            echo "status=dod_pending" >> $GITHUB_OUTPUT
+          elif [[ $EXIT_CODE -eq 1 ]]; then
+            echo "status=halted" >> $GITHUB_OUTPUT
+          else
+            echo "status=ok" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit audit log updates
+        if: always()
+        run: |
+          git add .audit/ .dod/ .hermes/ || true
+          if git diff --staged --quiet; then
+            echo "No audit changes to commit"
+          else
+            git commit -m "audit: roadmap loop — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            git push
+          fi
+
+      - name: Sync pending confirmations to GitHub Issues
+        if: steps.roadmap.outputs.status == 'dod_pending'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .claude/bin/gh-sync-pending.sh
+
+      - name: Notify Slack — DoD pending
+        if: steps.roadmap.outputs.status == 'dod_pending'
+        env:
+          SLACK_WEBHOOK_DOD: ${{ secrets.SLACK_WEBHOOK_DOD }}
+        run: bash .claude/bin/notify-pending.sh --post
+
+      - name: Notify Slack — Halted
+        if: steps.roadmap.outputs.status == 'halted'
+        env:
+          SLACK_WEBHOOK_ALERTS: ${{ secrets.SLACK_WEBHOOK_ALERTS }}
+        run: |
+          REASON=$(tail -5 /tmp/roadmap-output.txt | grep -i halt || echo "See workflow logs")
+          WEBHOOK="${SLACK_WEBHOOK_ALERTS:-}"
+          if [[ -n "$WEBHOOK" ]]; then
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"🔴 *Roadmap HALTED*\n${REASON}\nRun: \`/roadmap continue\` to investigate.\"}" \
+              "$WEBHOOK"
+          fi
+
+      - name: Shift audit log to S3
+        if: always()
+        env:
+          AWS_AUDIT_BUCKET: ${{ secrets.AWS_AUDIT_BUCKET }}
+          AWS_AUDIT_ROLE_ARN: ${{ secrets.AWS_AUDIT_ROLE_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'ap-northeast-2' }}
+        run: bash .claude/bin/audit-shift.sh || true

@@ -1,0 +1,99 @@
+name: Audit Chain Verify
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '.audit/**'
+  pull_request:
+    paths:
+      - '.audit/**'
+      - '.claude/**'
+      - '.github/**'
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  verify-chain:
+    name: Verify Audit Hash Chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify audit chain
+        id: verify
+        run: |
+          if [[ ! -f .audit/events.jsonl ]]; then
+            echo "status=no_log" >> $GITHUB_OUTPUT
+            echo "No audit log — skipping verification (first run)"
+            exit 0
+          fi
+
+          bash .claude/bin/audit-verify.sh
+          echo "status=ok" >> $GITHUB_OUTPUT
+
+      - name: Block direct audit log edits (non-bot)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Check if .audit/events.jsonl was directly modified in this PR
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null | grep '^\.audit/events\.jsonl' || true)
+
+          if [[ -n "$CHANGED" ]]; then
+            # Allow if PR author is the bot
+            AUTHOR="${{ github.event.pull_request.user.login }}"
+            if [[ "$AUTHOR" == *"[bot]"* ]] || [[ "$AUTHOR" == "sprint-system-bot" ]]; then
+              echo "Bot PR — audit log edit allowed"
+            else
+              echo "❌ POLICY VIOLATION: Direct edit of .audit/events.jsonl by @${AUTHOR}"
+              echo "The audit log must only be modified by the sprint-system bot via audit-append.sh"
+              exit 1
+            fi
+          fi
+
+  verify-scripts-intact:
+    name: Verify Audit Scripts Not Modified
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for unauthorized script changes
+        run: |
+          PROTECTED=(
+            ".claude/bin/audit-append.sh"
+            ".claude/bin/audit-verify.sh"
+            ".claude/bin/audit-attest.sh"
+            ".claude/commands/dod.md"
+          )
+
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null)
+          AUTHOR="${{ github.event.pull_request.user.login }}"
+
+          for script in "${PROTECTED[@]}"; do
+            if echo "$CHANGED" | grep -q "^${script}$"; then
+              if [[ "$AUTHOR" == *"[bot]"* ]]; then
+                echo "Bot PR — $script change allowed"
+              else
+                echo "⚠️ WARNING: Protected audit script modified: $script by @${AUTHOR}"
+                echo "This change requires security review. Adding label."
+                gh pr edit ${{ github.event.pull_request.number }} --add-label "security-review-required" 2>/dev/null || true
+              fi
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

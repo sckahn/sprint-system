@@ -1,0 +1,32 @@
+# ─── Runtime / per-project state (NOT part of template) ───
+.audit/events.jsonl
+.audit/events.jsonl.lock
+.audit/*.lock
+.dod/pending/
+.dod/confirmed/
+.dod/rejected/
+.hermes/proposals/*.json
+.hermes/state.json
+
+# Project-bound (each new project generates its own)
+roadmap.md
+CLAUDE.md
+.mcp.json
+.worktrees/
+worktrees/
+docs/superpowers/plans/*.md
+docs/superpowers/specs/*.md
+!docs/superpowers/plans/.gitkeep
+!docs/superpowers/specs/.gitkeep
+
+# OS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Secrets
+*.pem
+*.key
+.env
+.env.local

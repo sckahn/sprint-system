@@ -1,0 +1,59 @@
+{
+  "name": "sprint-system",
+  "version": "1.0.0",
+  "description": "Agile multi-agent development team with sprint management, DoD gates, Hermes learning, and financial-grade audit logging.",
+  "author": "your-github-username",
+  "repository": "https://github.com/your-org/sprint-system-plugin",
+  "license": "MIT",
+  "tags": ["agile", "sprint", "audit", "compliance", "multi-agent", "devops"],
+  "components": {
+    "commands": [
+      "commands/sprint.md",
+      "commands/roadmap.md",
+      "commands/dod.md",
+      "commands/sprint-system-init.md"
+    ],
+    "agents": [
+      "agents/spec-writer.md",
+      "agents/architect.md",
+      "agents/backend-eng.md",
+      "agents/frontend-eng.md",
+      "agents/db-engineer.md",
+      "agents/code-reviewer.md",
+      "agents/security-auditor.md",
+      "agents/qa-tester.md",
+      "agents/interface-validator.md",
+      "agents/ci-cd-engineer.md",
+      "agents/release-manager.md",
+      "agents/sre-incident.md",
+      "agents/hermes.md",
+      "agents/ml-engineer.md",
+      "agents/data-engineer.md",
+      "agents/mobile-eng.md",
+      "agents/accessibility-auditor.md"
+    ],
+    "skills": [
+      "skills/coding-style/SKILL.md",
+      "skills/api-contract/SKILL.md",
+      "skills/postmortem-template/SKILL.md",
+      "skills/test-driven-development/SKILL.md",
+      "skills/systematic-debugging/SKILL.md",
+      "skills/verification-before-completion/SKILL.md",
+      "skills/brainstorming/SKILL.md",
+      "skills/writing-plans/SKILL.md",
+      "skills/executing-plans/SKILL.md",
+      "skills/dispatching-parallel-agents/SKILL.md",
+      "skills/requesting-code-review/SKILL.md",
+      "skills/receiving-code-review/SKILL.md",
+      "skills/using-git-worktrees/SKILL.md",
+      "skills/finishing-a-development-branch/SKILL.md",
+      "skills/subagent-driven-development/SKILL.md"
+    ],
+    "hooks": [
+      "hooks/audit-mcp-hook.sh"
+    ]
+  },
+  "install": {
+    "postInstall": "echo '\\n✅ sprint-system installed. Run /sprint-system:init in your project to provision project-bound files (workflows, scripts, audit chain).'"
+  }
+}

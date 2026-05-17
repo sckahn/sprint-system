@@ -1,0 +1,37 @@
+{
+  "mcpServers": {
+    "linear": {
+      "command": "npx",
+      "args": ["-y", "@linear/mcp-server"],
+      "env": {
+        "LINEAR_API_KEY": "${LINEAR_API_KEY}"
+      },
+      "hooks": {
+        "postToolCall": "bash .claude/bin/audit-mcp-hook.sh"
+      }
+    },
+    "sentry": {
+      "command": "npx",
+      "args": ["-y", "@sentry/mcp-server"],
+      "env": {
+        "SENTRY_AUTH_TOKEN": "${SENTRY_AUTH_TOKEN}",
+        "SENTRY_ORG": "${SENTRY_ORG}"
+      },
+      "hooks": {
+        "postToolCall": "bash .claude/bin/audit-mcp-hook.sh"
+      }
+    },
+    "datadog": {
+      "command": "npx",
+      "args": ["-y", "@datadog/mcp-server"],
+      "env": {
+        "DD_API_KEY": "${DD_API_KEY}",
+        "DD_APP_KEY": "${DD_APP_KEY}",
+        "DD_SITE": "datadoghq.com"
+      },
+      "hooks": {
+        "postToolCall": "bash .claude/bin/audit-mcp-hook.sh"
+      }
+    }
+  }
+}

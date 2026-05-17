@@ -1,0 +1,125 @@
+name: DoD Handler
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  process-ac-comment:
+    name: Process AC Confirmation Comment
+    runs-on: ubuntu-latest
+    # Only trigger on DoD issues with recognized commands
+    if: |
+      github.event_name == 'issue_comment' &&
+      contains(github.event.issue.labels.*.name, 'dod:ac') &&
+      (
+        startsWith(github.event.comment.body, '/confirm') ||
+        startsWith(github.event.comment.body, '/yes') ||
+        startsWith(github.event.comment.body, '/reject') ||
+        startsWith(github.event.comment.body, '/no') ||
+        startsWith(github.event.comment.body, '/needs-more')
+      )
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: command -v jq || (sudo apt-get update -q && sudo apt-get install -y jq)
+
+      - name: Configure git
+        run: |
+          git config user.email "sprint-system[bot]@users.noreply.github.com"
+          git config user.name "sprint-system[bot]"
+
+      - name: Process comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: bash .claude/bin/gh-process-comment.sh
+
+  process-milestone-pr:
+    name: Process Milestone PR Merge
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'dod:milestone')
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: command -v jq || (sudo apt-get update -q && sudo apt-get install -y jq)
+
+      - name: Configure git
+        run: |
+          git config user.email "sprint-system[bot]@users.noreply.github.com"
+          git config user.name "sprint-system[bot]"
+
+      - name: Verify audit chain
+        run: bash .claude/bin/audit-verify.sh
+
+      - name: Record milestone completion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          MERGER="${{ github.event.pull_request.merged_by.login }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          # Extract milestone ID from PR labels (e.g., dod:milestone:M2 → M2)
+          MILESTONE_ID=$(echo '${{ toJson(github.event.pull_request.labels) }}' | \
+            python3 -c "import sys,json; labels=json.load(sys.stdin); \
+            ml=[l['name'] for l in labels if l['name'].startswith('dod:milestone:')]; \
+            print(ml[0].split(':')[-1] if ml else 'unknown')")
+
+          bash .claude/bin/audit-append.sh \
+            "{\"event\":\"milestone.completed\",\"milestone_id\":\"${MILESTONE_ID}\",\"confirmed_by\":\"${MERGER}\",\"pr_number\":${PR_NUMBER},\"pr_url\":\"${PR_URL}\",\"pr_title\":\"${PR_TITLE}\"}"
+
+          git add .audit/events.jsonl
+          git commit -m "audit: milestone ${MILESTONE_ID} completed via PR #${PR_NUMBER} by @${MERGER}"
+          git push
+
+          echo "✅ Milestone ${MILESTONE_ID} marked complete in audit log"
+
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_DOD: ${{ secrets.SLACK_WEBHOOK_DOD }}
+        run: |
+          WEBHOOK="${SLACK_WEBHOOK_DOD:-}"
+          if [[ -n "$WEBHOOK" ]]; then
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"🏁 *Milestone completed!* PR #${{ github.event.pull_request.number }} merged by @${{ github.event.pull_request.merged_by.login }}\"}" \
+              "$WEBHOOK"
+          fi
