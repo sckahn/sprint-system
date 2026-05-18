@@ -1,73 +1,91 @@
 name: Audit Log S3 Shift
 
+# Optional: archives the audit chain to S3 Object Lock for WORM preservation.
+# Disabled by default — only runs when AWS_AUDIT_BUCKET secret is set.
+
 on:
   schedule:
-    # Daily at 02:00 UTC
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *'   # Daily at 02:00 UTC
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write  # for OIDC
+  id-token: write
 
 jobs:
   shift:
     name: Shift Audit Log to S3 Object Lock
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: vars.AWS_AUDIT_BUCKET != ''
 
     steps:
+      - name: Check if S3 archival is configured
+        id: gate
+        env:
+          BUCKET: ${{ secrets.AWS_AUDIT_BUCKET }}
+        run: |
+          if [[ -z "${BUCKET:-}" ]]; then
+            echo "AWS_AUDIT_BUCKET not configured — skipping S3 shift."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.gate.outputs.skip == 'false'
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
+        if: steps.gate.outputs.skip == 'false'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_AUDIT_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || 'ap-northeast-2' }}
-        continue-on-error: true
 
       - name: Set up Python
+        if: steps.gate.outputs.skip == 'false'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Verify chain before shift
+        if: steps.gate.outputs.skip == 'false'
         run: |
           if [[ -f .audit/events.jsonl ]]; then
             bash .claude/bin/audit-verify.sh
           else
-            echo "No audit log — skipping"
+            echo "No audit log — nothing to shift"
             exit 0
           fi
 
       - name: Shift to S3
+        if: steps.gate.outputs.skip == 'false'
         env:
           AWS_AUDIT_BUCKET: ${{ secrets.AWS_AUDIT_BUCKET }}
           AWS_AUDIT_ROLE_ARN: ${{ secrets.AWS_AUDIT_ROLE_ARN }}
         run: bash .claude/bin/audit-shift.sh
 
       - name: Monthly attestation (first day of month)
+        if: steps.gate.outputs.skip == 'false'
         run: |
           DAY=$(date -u +%d)
           if [[ "$DAY" == "01" ]] && [[ -f .audit/events.jsonl ]]; then
             MONTH=$(date -u +%Y-%m)
             FIRST_SEQ=$(python3 -c "
-import json
-with open('.audit/events.jsonl') as f:
-    for line in f:
-        ev = json.loads(line)
-        if ev['ts'].startswith('${MONTH}'):
-            print(ev['seq']); break
-" 2>/dev/null || echo "1")
+          import json
+          with open('.audit/events.jsonl') as f:
+              for line in f:
+                  ev = json.loads(line)
+                  if ev['ts'].startswith('${MONTH}'):
+                      print(ev['seq']); break
+          " 2>/dev/null || echo "1")
             LAST_SEQ=$(python3 -c "
-import json
-with open('.audit/events.jsonl') as f:
-    lines = [l for l in f if l.strip()]
-    if lines:
-        print(json.loads(lines[-1])['seq'])
-" 2>/dev/null || echo "1")
+          import json
+          with open('.audit/events.jsonl') as f:
+              lines = [l for l in f if l.strip()]
+              if lines:
+                  print(json.loads(lines[-1])['seq'])
+          " 2>/dev/null || echo "1")
             bash .claude/bin/audit-attest.sh \
               --from "$FIRST_SEQ" --to "$LAST_SEQ" \
               --label "monthly-${MONTH}" || true
