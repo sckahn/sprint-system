@@ -1,11 +1,11 @@
 name: Audit Log S3 Shift
 
 # Optional: archives the audit chain to S3 Object Lock for WORM preservation.
-# Disabled by default — only runs when AWS_AUDIT_BUCKET secret is set.
+# Disabled unless AWS_AUDIT_BUCKET secret is set.
 
 on:
   schedule:
-    - cron: '0 2 * * *'   # Daily at 02:00 UTC
+    - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
           BUCKET: ${{ secrets.AWS_AUDIT_BUCKET }}
         run: |
           if [[ -z "${BUCKET:-}" ]]; then
-            echo "AWS_AUDIT_BUCKET not configured — skipping S3 shift."
+            echo "AWS_AUDIT_BUCKET not configured — skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -54,8 +54,7 @@ jobs:
           if [[ -f .audit/events.jsonl ]]; then
             bash .claude/bin/audit-verify.sh
           else
-            echo "No audit log — nothing to shift"
-            exit 0
+            echo "No audit log yet — nothing to shift."
           fi
 
       - name: Shift to S3
@@ -67,26 +66,4 @@ jobs:
 
       - name: Monthly attestation (first day of month)
         if: steps.gate.outputs.skip == 'false'
-        run: |
-          DAY=$(date -u +%d)
-          if [[ "$DAY" == "01" ]] && [[ -f .audit/events.jsonl ]]; then
-            MONTH=$(date -u +%Y-%m)
-            FIRST_SEQ=$(python3 -c "
-          import json
-          with open('.audit/events.jsonl') as f:
-              for line in f:
-                  ev = json.loads(line)
-                  if ev['ts'].startswith('${MONTH}'):
-                      print(ev['seq']); break
-          " 2>/dev/null || echo "1")
-            LAST_SEQ=$(python3 -c "
-          import json
-          with open('.audit/events.jsonl') as f:
-              lines = [l for l in f if l.strip()]
-              if lines:
-                  print(json.loads(lines[-1])['seq'])
-          " 2>/dev/null || echo "1")
-            bash .claude/bin/audit-attest.sh \
-              --from "$FIRST_SEQ" --to "$LAST_SEQ" \
-              --label "monthly-${MONTH}" || true
-          fi
+        run: bash .claude/bin/audit-attest.sh --monthly || true
