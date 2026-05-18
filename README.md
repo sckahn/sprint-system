@@ -29,9 +29,16 @@ gh repo create my-app --template sckahn/sprint-system --private --clone
 cd my-app
 bash .claude/bin/bootstrap.sh
 claude
-# 안에서:
-/roadmap init   # 마일스톤·AC 작성
-/sprint         # 첫 스프린트 시작
+# 안에서 — 한 문장이면 끝:
+/start "친구랑 같이 하는 빙수 빨리먹기 게임 만들고 싶어"
+```
+
+`/start`이 architect·spec-writer로 로드맵 자동 생성 → 사람 컨펌 1회 → 모든 스프린트 자동 실행 → DoD 게이트마다만 멈춤.
+
+수동 제어를 원하면:
+```
+/roadmap init   # 마일스톤·AC 직접 작성
+/sprint         # 첫 스프린트
 ```
 
 ### 방법 2: 기존 프로젝트에 얹기

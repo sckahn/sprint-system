@@ -8,6 +8,7 @@
   "tags": ["agile", "sprint", "audit", "compliance", "multi-agent", "devops"],
   "components": {
     "commands": [
+      "commands/start.md",
       "commands/sprint.md",
       "commands/roadmap.md",
       "commands/dod.md",

@@ -123,6 +123,7 @@ echo ""
 echo "── Phase 4: Slash commands"
 
 COMMANDS=(
+  ".claude/commands/start.md"
   ".claude/commands/sprint.md"
   ".claude/commands/roadmap.md"
   ".claude/commands/dod.md"
