@@ -70,6 +70,40 @@ Phase 8  종료
 
 ---
 
+## 📱 모바일에서 한 문장으로 시작 (헤드리스)
+
+**데스크톱 없이 GitHub 모바일 앱만으로 전체 사이클 운영 가능.**
+
+### 처음 한 번 (데스크톱)
+
+```bash
+gh repo create my-app --template sckahn/sprint-system --private --clone
+cd my-app
+bash .claude/bin/bootstrap.sh
+gh secret set ANTHROPIC_API_KEY      # 필수
+# 라벨 생성 (bootstrap.sh 마지막 출력 한 줄 복붙)
+git push
+```
+
+### 이후 — 모바일 GitHub 앱에서
+
+1. 레포 열기 → **Issues** → **New** → **🚀 Project Brief**
+2. 한 문장 입력 (예: "친구랑 같이 하는 빙수 빨리먹기 게임 만들고 싶어")
+3. 규모 선택 → **Submit**
+4. ~2분 후 이슈에 로드맵 코멘트 달림
+5. **답글**:
+   - `/yes` — 진행
+   - `/edit 마일스톤 2 빼고 인증 추가` — 수정 요청
+   - `/no` — 취소
+6. 이후 AC/마일스톤/프로젝트 게이트마다 자동으로 이슈 생성됨
+   - AC 이슈: `/confirm AC-1.1`
+   - 마일스톤 이슈: `/yes` 또는 `/halt 사유`
+   - 프로젝트 이슈: `/close` (최종 사인오프 + attestation)
+
+데스크톱은 다시 켤 필요 없음.
+
+---
+
 ## GitHub Actions로 헤드리스 운영
 
 ### 필수 Secrets

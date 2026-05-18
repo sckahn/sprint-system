@@ -1,0 +1,164 @@
+name: Start Handler
+
+# Handles the headless /start flow:
+#   - issues.opened with label "gate:brief"  → run architect + spec-writer, post roadmap as comment
+#   - issue_comment on "gate:roadmap"        → /yes runs sprint loop, /edit re-plans, /no cancels
+#   - issue_comment on "gate:milestone"      → /yes moves to next milestone
+#   - issue_comment on "gate:project"        → /close finalizes project
+
+on:
+  issues:
+    types: [opened, labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode: continue_sprint | continue_milestone'
+        required: false
+        default: 'continue_sprint'
+      issue_number:
+        description: 'Issue number to coordinate with'
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: start-handler-${{ github.event.issue.number || github.event.inputs.issue_number || 'manual' }}
+  cancel-in-progress: false
+
+jobs:
+  # ─── 1. New brief → generate roadmap ─────────────────────────
+  generate-roadmap:
+    name: Brief → Roadmap
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issues' &&
+      github.event.action == 'opened' &&
+      contains(github.event.issue.labels.*.name, 'gate:brief')
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, token: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Install deps
+        run: command -v jq || (sudo apt-get update -q && sudo apt-get install -y jq)
+
+      - name: Configure git
+        run: |
+          git config user.email "sprint-system[bot]@users.noreply.github.com"
+          git config user.name "sprint-system[bot]"
+
+      - name: Run /start headless
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_HEADLESS: "1"
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          BRIEF_BODY: ${{ github.event.issue.body }}
+          BRIEF_TITLE: ${{ github.event.issue.title }}
+        run: |
+          # Pass the brief into /start in headless mode
+          # The /start command's headless branch posts the roadmap proposal back to ISSUE_NUMBER
+          claude --headless -p "/start --issue=$ISSUE_NUMBER --headless" 2>&1 | tee /tmp/start-output.txt
+
+      - name: Commit audit + roadmap
+        run: |
+          git add .audit/ .dod/ roadmap.md 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "feat: roadmap draft for issue #${{ github.event.issue.number }}"
+            git push
+          fi
+
+      - name: Move label  brief → roadmap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} \
+            --add-label "gate:roadmap" --remove-label "gate:brief"
+
+      - name: Notify Slack
+        env: { SLACK_WEBHOOK_DOD: "${{ secrets.SLACK_WEBHOOK_DOD }}" }
+        run: |
+          [[ -n "${SLACK_WEBHOOK_DOD:-}" ]] && \
+            curl -s -X POST -H 'Content-type: application/json' \
+              --data "{\"text\":\"📋 로드맵 초안 준비 완료 — Issue #${{ github.event.issue.number }} 확인 후 \`/yes\` 또는 \`/edit\`\"}" \
+              "$SLACK_WEBHOOK_DOD" || true
+
+  # ─── 2. Roadmap / milestone / project gate comments ───────────
+  handle-gate-comment:
+    name: Process gate comment
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issue_comment' &&
+      (
+        contains(github.event.issue.labels.*.name, 'gate:roadmap') ||
+        contains(github.event.issue.labels.*.name, 'gate:milestone') ||
+        contains(github.event.issue.labels.*.name, 'gate:project')
+      ) &&
+      (
+        startsWith(github.event.comment.body, '/yes') ||
+        startsWith(github.event.comment.body, '/edit') ||
+        startsWith(github.event.comment.body, '/no') ||
+        startsWith(github.event.comment.body, '/close') ||
+        startsWith(github.event.comment.body, '/halt')
+      )
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, token: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - run: command -v jq || (sudo apt-get update -q && sudo apt-get install -y jq)
+
+      - run: |
+          git config user.email "sprint-system[bot]@users.noreply.github.com"
+          git config user.name "sprint-system[bot]"
+
+      - name: Authorization check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Only repo owners / writers can act on gates
+          PERM=$(gh api "repos/$REPO/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null || echo "none")
+          echo "Author $AUTHOR has permission: $PERM"
+          case "$PERM" in
+            admin|write|maintain) echo "✓ authorized" ;;
+            *)
+              gh issue comment ${{ github.event.issue.number }} \
+                --body "❌ @$AUTHOR — 게이트 명령 권한이 없습니다 ($PERM)."
+              exit 1
+              ;;
+          esac
+
+      - name: Dispatch by gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CLAUDE_HEADLESS: "1"
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          ISSUE_LABELS: ${{ toJson(github.event.issue.labels) }}
+        run: bash .claude/bin/gh-process-gate.sh
+
+      - name: Commit audit updates
+        if: always()
+        run: |
+          git add .audit/ .dod/ roadmap.md 2>/dev/null || true
+          if ! git diff --staged --quiet; then
+            git commit -m "audit: gate processed for issue #${{ github.event.issue.number }}"
+            git push
+          fi

@@ -146,15 +146,49 @@ Show:
 
 ---
 
-## Headless mode
+## Headless mode (`CLAUDE_HEADLESS=1`, mobile-friendly)
 
-If `CLAUDE_HEADLESS=1` (set by GitHub Actions):
-- Gate 0 → post roadmap as GitHub Issue, wait for `/confirm` comment
-- Phase 4.3 → existing PR comment flow (no change)
-- Milestone gate → existing dod-handler flow
-- Project gate → existing dod-handler flow
+When `CLAUDE_HEADLESS=1` is set (e.g. invoked from `.github/workflows/start-handler.yml`), the interactive prompts above are replaced by GitHub Issue rounds:
 
-The interactive prompts above are wrapped automatically by `.claude/bin/gh-sync-pending.sh`.
+### Invocation forms
+
+```bash
+/start --issue=<N> --headless              # New brief: read brief from issue body, post roadmap as comment
+/start --issue=<N> --headless --edit="..." # Re-plan with user's edit instructions
+```
+
+### Headless Gate 0 flow
+
+1. Read the brief from GitHub Issue `#<N>` body (parsed from the "Project Brief" form fields: brief, scope, constraints)
+2. Append `project.brief_received` audit event with `issue_number=<N>`
+3. Invoke `architect` + `spec-writer` (same as interactive mode) to produce roadmap proposal
+4. Write `roadmap.md` to working tree (will be committed by the workflow)
+5. Post a comment to issue `#<N>` containing:
+   - Architect's recommended option
+   - Full roadmap.md preview (in a collapsible `<details>` block)
+   - Instructions: "이 로드맵으로 진행할까요? 다음 중 하나로 답변하세요: `/yes`, `/edit 수정사항`, `/no`"
+6. Exit 0 — the workflow then changes label `gate:brief` → `gate:roadmap` and waits
+
+### Headless gate progression
+
+| Gate | Issue label | User comments | Next |
+|------|-------------|---------------|------|
+| Roadmap | `gate:roadmap` | `/yes` | Start sprint loop |
+| Roadmap | `gate:roadmap` | `/edit ...` | Re-plan, repost |
+| Roadmap | `gate:roadmap` | `/no` | Cancel project |
+| AC (Phase 4.3) | `dod:ac` (existing flow) | `/confirm AC-N.M` | Mark AC confirmed |
+| Milestone | `gate:milestone` | `/yes` | Next milestone |
+| Project | `gate:project` | `/close` | Finalize + attestation |
+
+### Mobile UX
+
+The entire flow works from the GitHub mobile app:
+1. Open repo → "Issues" → "New" → "🚀 Project Brief"
+2. Type one sentence → Submit
+3. Read roadmap comment → `/yes` or `/edit ...`
+4. Subsequent AC/milestone/project gates all arrive as issues — comment to approve
+
+No desktop required after the initial template provisioning.
 
 ---
 
