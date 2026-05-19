@@ -20,6 +20,47 @@ You are the PM coordinator. The user gave you a single sentence describing what 
 
 ---
 
+## Step -1 — Auto-bootstrap (run BEFORE Gate 0)
+
+Before doing anything else, ensure the current working directory is a valid sprint-system project. This lets `/start` work from any fresh directory when the sprint-system is installed globally.
+
+Check in this order:
+
+1. **Already initialized?** If `.audit/events.jsonl` exists AND has at least one entry → skip to Gate 0.
+
+2. **Globally installed?** Check `~/.claude/sprint-system-root` exists. If yes, run:
+   ```bash
+   bash "$(cat ~/.claude/sprint-system-root)/.claude/bin/bootstrap-cwd.sh"
+   ```
+   This script:
+   - `git init` if not a repo
+   - creates `.audit/`, `.dod/`, `.hermes/proposals/`, `docs/adr/`, `docs/superpowers/`
+   - symlinks `.claude` to the sprint-system root (so `.claude/bin/*` resolvable)
+   - copies `roadmap.template.md` → `roadmap.md` (placeholder, will be overwritten in Gate 0)
+   - appends `audit.genesis` event
+   - verifies chain integrity
+
+3. **Not globally installed AND not in a sprint-system repo?** Tell the user:
+   > "이 디렉터리는 sprint-system 프로젝트가 아닙니다. 둘 중 하나를 선택하세요:
+   >
+   > A) 새 프로젝트로 시작: `gh repo create my-app --template sckahn/sprint-system --private --clone && cd my-app && bash .claude/bin/bootstrap.sh`
+   >
+   > B) sprint-system 본체에서 글로벌 설치 후 어디서나 사용:
+   >    `cd <sprint-system-root> && bash .claude/bin/install-global.sh`"
+   >
+   > Then stop.
+
+4. **Globally installed but bootstrap failed?** Report the error from `bootstrap-cwd.sh` and stop. Do not proceed to Gate 0 with a broken audit chain.
+
+After auto-bootstrap succeeds, append:
+```bash
+bash .claude/bin/audit-append.sh "{\"event\":\"project.bootstrapped_via_start\",\"cwd\":\"$(pwd)\"}"
+```
+
+Then proceed to Gate 0 below.
+
+---
+
 ## Gate 0 — Brief → Roadmap (interactive)
 
 ### Step 0.1 — Sanity check the brief
