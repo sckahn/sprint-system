@@ -7,14 +7,17 @@ description: "Manage Definition-of-Done confirmations asynchronously. Review pen
 Async confirmation interface for DoD gates. Use this when GitHub Issues have accumulated pending confirmations and you want to process them in one session.
 
 Sub-commands:
-- `/dod review` — interactively process all pending items
-- `/dod status` — show pending/confirmed counts (no audit write)
+- `/dod review --as <name>` — interactively process the ACs you own (multi-human mode)
+- `/dod review` — process all pending items (PM/solo mode — only allowed if `SOLO_MODE=1`)
+- `/dod status` — show ownership matrix + confirmation status (no audit write)
 - `/dod pending` — list pending items only (no audit write)
-- `/dod confirm <id> [comment]` — confirm a single AC
-- `/dod reject <id> <reason>` — reject a single AC
-- `/dod needs-more <id> <description>` — request more evidence
+- `/dod confirm <id> [comment] [--as <name>]` — confirm a single AC
+- `/dod reject <id> <reason> [--as <name>]` — reject a single AC
+- `/dod needs-more <id> <description> [--as <name>]` — request more evidence
 - `/dod confirm-milestone <id> [comment]` — confirm a milestone (requires GitHub PR to exist)
 - `/dod confirm-project [signer]` — final project sign-off
+
+**Multi-human ownership model**: each AC has one `owner` recorded via `ac.owner_assigned` events at sprint start. Only that owner may confirm/reject their AC (4-eyes: owner ≠ driver/PM). `--as <name>` MUST match the AC's recorded owner; mismatch → refused.
 
 ---
 
@@ -27,32 +30,48 @@ Sub-commands:
 5. Project confirmation requires ALL milestones to be `milestone.completed`
 6. Auto-confirm (`/dod confirm --all`, `--yes-all`, etc.) is NOT supported
 7. **RC restriction**: `/dod confirm-milestone` and `/dod confirm-project` are BLOCKED when `CLAUDE_RC_ACTIVE=1`
+8. **Ownership invariant**: every confirm/reject MUST match the AC's recorded owner. Look up via `bash .claude/bin/ac-ownership-check.sh owner <ac_id>`. Mismatch → refuse with "AC-X is owned by <X>, not <Y>".
+9. **Shared-branch syncing**: all confirm/reject events MUST be appended with `audit-append.sh --git-sync` so other owners on other machines see the latest state.
 
 ---
 
 ## `/dod status` / `/dod pending`
 
-Read `.audit/events.jsonl`. Tally:
+First `git fetch origin && git pull --ff-only` on the current sprint branch (so you see other owners' confirms). Then read `.audit/events.jsonl` and call `bash .claude/bin/ac-ownership-check.sh matrix <sprint>`:
 
 ```
 DoD Status — <project name>
+Branch: sprint/10-add-payment-flow   (head: 0a3f1c2)
 
-Pending confirmations:
-  ACs:        <N> pending  /  <N> total
-  Milestones: <N> pending  /  <N> total
-  Project:    <open/closed>
+Sprint 10 — Human Check Matrix:
+  AC ID     Owner              Status            Confirmed at
+  ──────────────────────────────────────────────────────────────
+  AC-1.1    jdoe               ✅ confirmed       2026-05-22 10:30
+  AC-1.2    asmith             ⏳ pending         -
+  AC-1.3    bkim               ❌ rejected        2026-05-22 11:05  reason: edge case missing
+  AC-1.4    jdoe               ⏳ pending         -
 
-Pending AC list:
-  • AC-3.2  sprint 7   milestone M2  (evidence: seq #198)
-  • AC-4.1  sprint 8   milestone M3  (evidence: seq #212)
+Sprint promotion:
+  2 / 4 ACs confirmed.  1 rejected → owner must re-work.
+  Not ready for /sprint promote.
+
+Pending milestones: 0 / 1
+Project: open
 
 No audit writes performed.
-Run `/dod review` to process.
+Run `/dod review --as <your name>` to confirm your own ACs.
 ```
 
 ---
 
-## `/dod review`
+## `/dod review [--as <name>]`
+
+**Multi-human mode (`--as` given)**:
+- Filter ACs to those whose owner matches `<name>` (case-insensitive name match against `ac.owner_assigned` events). If 0 matches, print "No ACs owned by <name> in current sprint" and exit.
+- Export `VIBE_REVIEWER="<name>"` so commit trailers get stamped (if you make code edits during review).
+- First sync: `git fetch origin && git pull --ff-only`.
+
+**Solo mode (no `--as`)**: requires `SOLO_MODE=1`; otherwise refuse with "multi-human sprint — use --as <your name>".
 
 Process each pending item interactively, one at a time.
 
@@ -72,6 +91,11 @@ Evidence:
   Review:    <finding_count> findings — <severity>
   Code:      <file>:<lines>
 
+📄 Review packet (보고서/구현내용/기능명세/코드명세):
+   .sprint-reports/sprint-<N>/AC-<ac_id>.md
+   (요약: .sprint-reports/sprint-<N>/SUMMARY.md)
+   ⚠ 패킷 파일이 없으면 confirm 차단 — sprint Phase 4.2 재실행 필요
+
 ═══════════════════════════════════════════════════════
 > yes [comment] | no <reason> | needs-more <description> | skip
 ```
@@ -79,8 +103,11 @@ Evidence:
 On `yes [comment]`:
 - Verify chain integrity
 - Verify evidence_ready event exists
+- **Verify review packet file exists at `.sprint-reports/sprint-<N>/AC-<ac_id>.md`** — if missing, refuse and instruct human to re-run sprint Phase 4.2
+- **Verify caller's `--as <name>` matches the AC's owner** (via `ac-ownership-check.sh owner <ac_id>`) — mismatch refuses
 - Verify not already processed
-- Append `ac.confirmed` event
+- Append `ac.confirmed` event with `--git-sync` so other owners see it
+- After append, check via `ac-ownership-check.sh sprint-ready <N>` — if ALL ACs are confirmed, also emit `sprint.fully_reviewed` and print "✅ Sprint <N> ready — PM can run /sprint promote"
 - Close GitHub Issue if exists
 - Print: `✅ AC-<id> confirmed (seq #<N>)`
 

@@ -105,6 +105,10 @@ SCRIPTS=(
   ".claude/bin/notify-pending.sh"
   ".claude/bin/start-rc.sh"
   ".claude/bin/bootstrap.sh"
+  ".claude/bin/stub-detect.sh"
+  ".claude/bin/liveness-check.sh"
+  ".claude/bin/git-vibe-trailer.sh"
+  ".claude/bin/ac-ownership-check.sh"
 )
 
 for s in "${SCRIPTS[@]}"; do
@@ -125,6 +129,7 @@ echo "── Phase 4: Slash commands"
 COMMANDS=(
   ".claude/commands/start.md"
   ".claude/commands/sprint.md"
+  ".claude/commands/sprint-promote.md"
   ".claude/commands/roadmap.md"
   ".claude/commands/dod.md"
 )
@@ -238,6 +243,36 @@ else
   err "audit chain BROKEN — run: bash .claude/bin/audit-verify.sh"
   ERRORS=$((ERRORS+1))
 fi
+
+echo ""
+
+# ─── Phase 8b: Vibe driver hook ─────────────────────────────
+echo "── Phase 8b: Vibe driver commit hook"
+
+# Note: .vibe-driver itself is created/refreshed at each /sprint start
+# (Phase 0.1) — bootstrap only installs the hook plumbing.
+if ! grep -qxF '.vibe-driver' "$ROOT/.gitignore" 2>/dev/null; then
+  echo ".vibe-driver" >> "$ROOT/.gitignore"
+  ok ".vibe-driver added to .gitignore"
+fi
+
+HOOK_TARGET="$ROOT/.git/hooks/prepare-commit-msg"
+HOOK_SRC="$ROOT/.claude/bin/git-vibe-trailer.sh"
+if [[ -d "$ROOT/.git/hooks" && -f "$HOOK_SRC" ]]; then
+  if [[ ! -e "$HOOK_TARGET" ]]; then
+    ln -s "../../.claude/bin/git-vibe-trailer.sh" "$HOOK_TARGET"
+    ok "prepare-commit-msg hook → git-vibe-trailer.sh"
+  elif [[ -L "$HOOK_TARGET" ]]; then
+    ok "prepare-commit-msg symlink already in place"
+  elif ! grep -q "git-vibe-trailer" "$HOOK_TARGET"; then
+    warn "prepare-commit-msg hook exists but doesn't chain git-vibe-trailer"
+    info "  add this line: bash .claude/bin/git-vibe-trailer.sh \"\$@\""
+  else
+    ok "prepare-commit-msg hook chains git-vibe-trailer"
+  fi
+fi
+
+info ".vibe-driver will be created on first /sprint run (interactive)"
 
 echo ""
 
