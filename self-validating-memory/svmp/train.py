@@ -17,8 +17,12 @@ from .tasks import CalibrationBanditTask, PositionalOrderingTask
 
 
 def train(phase: int = 1, steps: int = 2000, log_every: int = 200,
-          seed: int = 0, verbose: bool = True) -> dict:
-    """Run ``steps`` of self-validation learning. Returns final metrics."""
+          seed: int = 0, verbose: bool = True, learn: bool = True) -> dict:
+    """Run ``steps`` of self-validation learning. Returns final metrics.
+
+    Set ``learn=False`` for the passive control: no three-factor update and no
+    backprop, so the agent never improves and the budget economy punishes it.
+    """
     cfg = SVMPConfig(seed=seed)
     reward_mode = "positional" if phase >= 2 else "independent"
 
@@ -28,11 +32,13 @@ def train(phase: int = 1, steps: int = 2000, log_every: int = 200,
         task = CalibrationBanditTask(cfg.n_classes, seed=seed)
     input_dim = task.feature_dim
 
-    agent = SelfValidatingAgent(cfg, input_dim, reward_mode=reward_mode)
+    agent = SelfValidatingAgent(cfg, input_dim, reward_mode=reward_mode,
+                                learn=learn)
 
     acc_window: deque[int] = deque(maxlen=log_every)
     rewards: deque[float] = deque(maxlen=log_every)
     history = []
+    curve: list[tuple[int, float]] = []
 
     for t in range(1, steps + 1):
         if reward_mode == "positional":
@@ -51,8 +57,10 @@ def train(phase: int = 1, steps: int = 2000, log_every: int = 200,
                       f"(survived {t} rounds)")
             break
 
-        if verbose and t % log_every == 0:
+        if t % log_every == 0:
             acc = sum(acc_window) / len(acc_window)
+            curve.append((t, round(acc, 3)))
+        if verbose and t % log_every == 0:
             avg_r = sum(rewards) / len(rewards)
             m = agent.metrics()
             print(f"[step {t:5d}] acc={acc:.2f} reward={avg_r:+.2f} "
@@ -65,6 +73,7 @@ def train(phase: int = 1, steps: int = 2000, log_every: int = 200,
     final = agent.metrics()
     final["steps_run"] = len(history)
     final["final_accuracy"] = (sum(acc_window) / len(acc_window)) if acc_window else 0.0
+    final["curve"] = curve
     if verbose:
         print(f"\nFinal: acc={final['final_accuracy']:.2f} "
               f"ece={final['ece']:.3f} vault={final['vault']['size']} "

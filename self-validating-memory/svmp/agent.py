@@ -54,9 +54,10 @@ class StepLog:
 
 class SelfValidatingAgent:
     def __init__(self, cfg: SVMPConfig, input_dim: int,
-                 reward_mode: str = "independent"):
+                 reward_mode: str = "independent", learn: bool = True):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
+        self.learn = learn
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
         self.budget = BudgetEconomy(cfg.budget)
@@ -132,8 +133,15 @@ class SelfValidatingAgent:
         post_signal = onehot - pi                      # ∇ log π(action)
         self.learner.observe(out.feature.detach(), post_signal)
         surprise = 1.0 - float(pi[action])
-        factors = self.learner.update(reward, surprise, gap_signal,
-                                      loop_res.source_quality)
+        if self.learn:
+            factors = self.learner.update(reward, surprise, gap_signal,
+                                          loop_res.source_quality)
+        else:
+            # No plasticity: still compute the gate (for the vault) but don't
+            # write the decision head. This is the "passive" control.
+            factors = {"gate": self.learner.gate(surprise, gap_signal,
+                                                 loop_res.source_quality),
+                       "neuromod": 0.0}
 
         # 6b) Gated consolidation into the vault (verified knowledge only).
         vault_action = self.vault.consolidate(
@@ -142,7 +150,8 @@ class SelfValidatingAgent:
         self.vault.decay()
 
         # 7) Backprop pathway: representation + auxiliary heads.
-        self._backprop_step(x, qr.value, target, correct, loop_res)
+        if self.learn:
+            self._backprop_step(x, qr.value, target, correct, loop_res)
 
         self.ece.update(conf_val, correct)
         return StepLog(

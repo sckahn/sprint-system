@@ -125,6 +125,36 @@ GrowingVault.consolidate (게이트 열릴 때만) + decay (망각)
 
 ---
 
+## 실험 — 실제로 학습되나?
+
+대조 실험(5시드 × 2500스텝, full vs 학습 끈 passive 대조군):
+
+```bash
+PYTHONPATH=. python examples/experiment.py
+```
+
+실측 결과:
+
+```
+[FULL  (three-factor + backprop ON)]
+  final accuracy : 0.952 ± 0.027   | chance=0.25
+  ECE            : 0.146 ± 0.012
+  survived       : 5/5 agents stayed alive
+
+[PASSIVE  (all learning OFF)]
+  final accuracy : 0.234 ± 0.017   | chance=0.25  (= 무작위)
+  survived       : 0/5  (평균 722스텝 만에 예산 고갈로 사망)
+```
+
+두 가지 핵심 주장이 정량적으로 확인된다:
+1. **학습된다** — 정확도 0.43→0.95, chance(0.25)와 passive(0.23)를 크게 상회.
+2. **연산=생존자원이 실제로 작동** — 학습 못 하는 에이전트는 보상을 못 벌어
+   100% 예산 고갈 사망, 학습하는 에이전트는 100% 생존.
+
+`learn=False`는 3-인자 갱신과 역전파를 모두 끄는 passive 대조군이다.
+
+---
+
 ## 테스트
 
 ```bash
