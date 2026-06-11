@@ -84,15 +84,20 @@ class Verifier:
         norm = torch.nn.functional.normalize(embs, dim=1)
         sims = norm @ norm.t()                                  # cosine, [-1, 1]
         support = (sims >= self.consensus_tau).float().sum(1)   # incl. self
-        medoid = int(support.argmax())
+        # Break ties toward the higher-trust source (argmax returns the first
+        # maximum; the tiny trust term makes the choice explicit and stable).
+        medoid = int((support + raw_trust * 1e-6).argmax())
         consensus = sims[medoid] >= self.consensus_tau          # (n,) bool mask
 
         cw = torch.softmax(raw_trust[consensus], dim=0).unsqueeze(1)
         agg = (cw * embs[consensus]).sum(0)
 
         frac = float(consensus.float().mean())                  # corroboration mass
-        within = self._agreement(embs[consensus])               # tightness, [0,1]
         mean_trust = float(raw_trust[consensus].mean())
+        # Within-cluster tightness in [0, 1]. A singleton consensus is vacuously
+        # tight (1.0); its low corroboration is already penalised by ``frac``, so
+        # we must not zero out quality (which _agreement would do for n < 2).
+        within = self._agreement(embs[consensus]) if int(consensus.sum()) > 1 else 1.0
         quality = float(min(max(frac * mean_trust * within, 0.0), 1.0))
         return Evidence(agg, quality, n, within)
 

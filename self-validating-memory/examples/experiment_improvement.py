@@ -41,7 +41,9 @@ def _scenario(seed: int, k: int = 4, n: int = 300):
             if i < n_true:
                 emb = protos[true_c] + 0.25 * torch.randn(dim, generator=g)
             else:
-                wrong = int(torch.randint(nclass, (1,), generator=g))
+                # Strictly wrong class — a "lie" is never accidentally correct.
+                wrong = int(torch.randint(nclass - 1, (1,), generator=g))
+                wrong = wrong if wrong < true_c else wrong + 1
                 emb = protos[wrong] + 0.25 * torch.randn(dim, generator=g)
             trust = float(torch.clamp(0.65 + 0.12 * torch.randn(1, generator=g),
                                       0.05, 0.95))

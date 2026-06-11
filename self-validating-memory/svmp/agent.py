@@ -68,7 +68,8 @@ class SelfValidatingAgent:
         # Roles + adversarial loop.
         self.architect = Architect(cfg.roles)
         self.collector = Collector(cfg.roles)
-        self.verifier = Verifier(cfg.roles, generator=self.gen)
+        self.verifier = Verifier(cfg.roles, generator=self.gen,
+                                 aggregation="robust")
         self.loop = AdversarialLoop(cfg.roles, self.architect, self.collector,
                                     self.verifier)
 

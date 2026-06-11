@@ -76,11 +76,13 @@ def run_digits(seed: int, learn: bool, verifier: str = "simulated") -> dict:
                                 unreliable_frac=0.4, seed=seed)
         retriever = CorpusRetriever(
             corpus, encode_fn=lambda e: agent.model.encoder(e))
+        # Pin aggregation="mean" so this experiment's reported numbers stay a
+        # like-for-like baseline (the package default is now "robust").
         if verifier == "naive":
             cfg.roles.triangulation_k = 1
-            v = NaiveVerifier(cfg.roles, search_fn=retriever)
+            v = NaiveVerifier(cfg.roles, search_fn=retriever, aggregation="mean")
         else:  # "triangulated"
-            v = Verifier(cfg.roles, search_fn=retriever)
+            v = Verifier(cfg.roles, search_fn=retriever, aggregation="mean")
         agent.verifier = v
         agent.loop.verifier = v
 
