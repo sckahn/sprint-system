@@ -36,6 +36,38 @@ class CalibrationBanditTask:
         return x, target
 
 
+class RealDigitsTask:
+    """Real-data task: sklearn handwritten digits (1797 images, 10 classes).
+
+    Streams shuffled training samples for online learning and keeps a held-out
+    test split for frozen evaluation. Requires ``scikit-learn`` (optional dep;
+    imported lazily so the core package stays torch-only).
+    """
+
+    def __init__(self, seed: int = 0, test_frac: float = 0.25):
+        from sklearn.datasets import load_digits  # lazy optional import
+        d = load_digits()
+        X = torch.tensor(d.data, dtype=torch.float32) / 16.0  # features in [0,1]
+        y = torch.tensor(d.target, dtype=torch.long)
+        g = torch.Generator().manual_seed(seed)
+        perm = torch.randperm(len(X), generator=g)
+        n_test = int(len(X) * test_frac)
+        self.X_test, self.y_test = X[perm[:n_test]], y[perm[:n_test]]
+        self.X_train, self.y_train = X[perm[n_test:]], y[perm[n_test:]]
+        self.n_classes = 10
+        self.feature_dim = X.shape[1]
+        self.gen = torch.Generator().manual_seed(seed + 1)
+
+    def sample(self) -> tuple[torch.Tensor, int]:
+        i = int(torch.randint(len(self.X_train), (1,), generator=self.gen))
+        return self.X_train[i], int(self.y_train[i])
+
+    def class_prototypes(self) -> torch.Tensor:
+        """Mean embedding per class (used to build a retrieval corpus)."""
+        return torch.stack([self.X_train[self.y_train == c].mean(0)
+                            for c in range(self.n_classes)])
+
+
 class PositionalOrderingTask:
     """Structural task where reward depends on relational position (Phase 2/§4.5).
 

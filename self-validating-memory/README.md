@@ -153,6 +153,35 @@ PYTHONPATH=. python examples/experiment.py
 
 `learn=False`는 3-인자 갱신과 역전파를 모두 끄는 passive 대조군이다.
 
+### 실데이터 실험 (sklearn digits, 1797개 실제 손글씨, 10클래스)
+
+```bash
+pip install scikit-learn
+PYTHONPATH=. python examples/experiment_real.py
+```
+
+**A — 실데이터 학습** (3시드 × 3000스텝, held-out 테스트셋 평가):
+
+```
+FULL    : test acc 0.791 ± 0.064  (chance 0.10), 3/3 생존
+PASSIVE : test acc 0.105 ± 0.003  (= 무작위),    0/3 생존
+```
+
+**B — Phase 4 출처품질 평가** (실 retriever + 40% 오도성 문서 코퍼스):
+
+```
+TRIANGULATED (k=3, 합의 할인) : test acc 0.802 ± 0.070, 판별 갭 +0.084
+NAIVE        (k=1, 사전신뢰)  : test acc 0.729 ± 0.051, 판별 갭 +0.132
+```
+
+정직한 해석: 삼각측량이 end-to-end 정확도에서 +0.07 우세하나 n=3에서 표준편차가
+겹치므로 방향성 증거다. 원시 판별 갭은 naive가 더 큰데, 이 코퍼스의 신뢰 사전이
+설계상 이미 정보를 담고 있어서다 — 삼각측량의 이득은 판별력 자체보다 **보수성**
+(오도 증거에 게이트를 덜 열고, 검증 횟수 555 vs 624로 예산 절약)에서 온다.
+
+`svmp/retrieval.py`의 `CorpusRetriever`가 실 retriever 인터페이스이며,
+`Verifier(search_fn=...)`로 어떤 검색 백엔드든 주입 가능하다.
+
 ---
 
 ## 테스트
