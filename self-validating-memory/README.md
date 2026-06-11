@@ -80,8 +80,10 @@ GrowingVault.consolidate (게이트 열릴 때만) + decay (망각)
 | `svmp/learning/rewards.py` | `RewardTopology` — 독립 vs 위치 보상 | §4.5 |
 | `svmp/roles/architect.py` | `Architect` — 구조 가설 생성기 | §3 |
 | `svmp/roles/collector.py` | `Collector` — 창고 대조 판별기 | §3 |
-| `svmp/roles/verifier.py` | `Verifier` — 외부검색 + **출처품질 평가**(삼각측량) | §3,§4 |
+| `svmp/roles/verifier.py` | `Verifier` — 외부검색 + 출처품질 평가 (mean/robust/learned 집계) | §3,§4 |
+| `svmp/roles/trust_estimator.py` | `SourceTrustEstimator` — 학습 가능한 출처 가중치 (엔트로피 prior) | §4 |
 | `svmp/roles/adversarial.py` | `AdversarialLoop`, `SelfPlay`(Phase 5 스켈레톤) | §3 |
+| `svmp/retrieval.py` | `CorpusRetriever`, `DocumentCorpus` — 실 retriever 인터페이스 | §4 |
 | `svmp/calibration.py` | `CalibrationHead`, Jeopardy 베팅, ECE | §4.6 |
 | `svmp/model.py` | `SelfValidatingModel` — 미분 가능한 신경 코어 | §7 |
 | `svmp/agent.py` | `SelfValidatingAgent` — 전체 스텝 오케스트레이션 | §6 |
@@ -247,8 +249,26 @@ TDD로 구현했다. *진실은 일관되고 거짓은 다양하다*는 가정 �
 
 `PYTHONPATH=. python examples/experiment_learned_trust.py` 로 재현.
 
+#### 전이 검증 — 실 retriever(digits)로 넘어가면? (`experiment_learned_real.py`)
+
+합성 적대 레짐에서 통한 추정기를 **실제 digit 검색 코퍼스**로 전이했더니 처음엔
+오히려 *손해*를 봤다 — **음의 전이**. 원인: 양성 검색(top-k가 이미 대부분 정답)에선
+전체 평균이 최적인데, 추정기가 굳이 *선택적*으로 굴면서 유용한 신호를 버린다.
+
+처방: **최대 엔트로피 prior**(`entropy_reg`, 기본 0.1) — 가중치를 기본적으로 균등(=평균)
+쪽으로 당기고, *측정 가능하게 도움 될 때만* 집중하게 한다. n=6 시드:
+
+| 레짐 | mean | robust | learned (reg=0) | learned (reg=0.1) |
+|------|------|--------|------|------|
+| 합성 적대 (홈그라운드) | 0.637 | 0.693 | — | **0.724** |
+| 실 digits (양성) | 0.863 | 0.863 | 0.829 ❌ | **0.861 ✅** |
+
+reg=0 추정기는 digits에서 −0.033 손해(음의 전이), reg=0.1은 −0.002로 **패리티 회복**
+하면서 적대 레짐 이득(0.724)은 그대로다. 즉 추정기는 *기본은 평균, 필요할 때만 선택*.
+
 > **Phase 4 종합**: ① 기본 삼각측량은 무정보 사전에서 chance 근처 → ② robust 합의는
-> 적대적 레짐에서만 +0.04 → ③ 학습 추정기는 (지표 정렬 후) naive·robust 모두 능가.
+> 적대적 레짐에서만 +0.04 → ③ 학습 추정기는 (지표 정렬 후) naive·robust 모두 능가,
+> 단 양성 검색엔 음의 전이 → ④ 엔트로피 prior로 두 레짐 모두 안전.
 > 출처품질 평가는 어렵지만, *외부 정답 신호만으로 손튜닝 휴리스틱을 학습으로 따라잡고
 > 넘어설 수 있다*는 건설적 결론에 도달.
 
@@ -258,7 +278,7 @@ TDD로 구현했다. *진실은 일관되고 거짓은 다양하다*는 가정 �
 
 ```bash
 pip install pytest
-python -m pytest -q          # 34 passed
+python -m pytest -q          # 35 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,
@@ -272,8 +292,8 @@ python -m pytest -q          # 34 passed
 - `Verifier`의 외부 검색은 시뮬레이터 또는 `CorpusRetriever`(합성 코퍼스) — 실
   retriever(임베딩 DB·웹) 주입 가능하나 미연결
 - robust 합의 집계는 거짓이 코사인-분리 가능한 기하에서만 유효 — 양성 검색엔 no-op
-- 학습 추정기는 합성 적대적 레짐에서만 검증 — 실데이터·실 retriever 전이는 미검증
-- 학습 추정기 효과는 modest(+0.02 vs robust); 지표 정렬에 민감(리뷰에서 발견)
+- 학습 추정기 효과는 modest(+0.02 vs robust); 양성 검색엔 엔트로피 prior로 패리티만
+  (이득 없음). 실데이터 검증은 합성 코퍼스(`DocumentCorpus`) 한정 — 실 임베딩 DB·웹 미연결
 - 과제는 합성 스캐폴드 + sklearn digits — 메커니즘 시연용이지 벤치마크 아님
 - `SelfPlay`(Phase 5)는 배선만 문서화한 스켈레톤
 - 적대적 역할 학습은 단일 옵티마이저 동시경사 근사 (정식 alternating minimax 아님)

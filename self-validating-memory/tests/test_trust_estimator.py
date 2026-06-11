@@ -114,3 +114,22 @@ def test_learned_aggregation_requires_an_estimator():
         assert False, "expected ValueError when trust_estimator is missing"
     except ValueError:
         pass
+
+
+def _mean_weight_entropy(est, eps) -> float:
+    hs = []
+    for embs, trust, _ in eps:
+        w = est(embs, trust).detach()
+        hs.append(float(-(w * w.clamp(min=1e-9).log()).sum()))
+    return sum(hs) / len(hs)
+
+
+def test_entropy_regularization_pushes_weights_toward_uniform():
+    """Higher entropy regularization makes the estimator default toward uniform
+    weights (= the mean aggregate), which is what keeps it safe on benign
+    retrieval where averaging all sources is already optimal."""
+    eps, protos = _episodes(0)
+    test_eps, _ = _episodes(1000, protos=protos)
+    est_low = train_trust_estimator(eps, protos, epochs=15, entropy_reg=0.0)
+    est_high = train_trust_estimator(eps, protos, epochs=15, entropy_reg=0.5)
+    assert _mean_weight_entropy(est_high, test_eps) > _mean_weight_entropy(est_low, test_eps)

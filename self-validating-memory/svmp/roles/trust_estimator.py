@@ -86,7 +86,7 @@ class SourceTrustEstimator(nn.Module):
 
 def train_trust_estimator(episodes, prototypes: torch.Tensor, epochs: int = 10,
                           lr: float = 1e-2, hidden: int = 16,
-                          temperature: float = 8.0,
+                          temperature: float = 8.0, entropy_reg: float = 0.1,
                           seed: int = 0) -> SourceTrustEstimator:
     """Train the estimator on (embs, trust, true_class) episodes.
 
@@ -99,6 +99,14 @@ def train_trust_estimator(episodes, prototypes: torch.Tensor, epochs: int = 10,
     the training objective and the evaluation metric agree. ``temperature``
     rescales the squared distance (O(10-40) for norm-4 prototypes) into a stable
     logit range so the softmax does not saturate.
+
+    ``entropy_reg`` adds a maximum-entropy prior on the source weights: it pulls
+    the weighting toward uniform (= the plain mean aggregate) unless committing
+    to a subset measurably lowers the loss. This is what makes the estimator
+    *safe across regimes* — on benign retrieval, where averaging all sources is
+    already optimal, an unregularised estimator over-selects and HURTS
+    (negative transfer); the prior recovers parity while keeping the gain on
+    adversarial retrieval. See examples/experiment_learned_real.py.
     """
     # Scope the seed to weight init so we don't perturb the global RNG state.
     with torch.random.fork_rng():
@@ -111,8 +119,10 @@ def train_trust_estimator(episodes, prototypes: torch.Tensor, epochs: int = 10,
             w = est(embs, trust)
             agg = (w.unsqueeze(1) * embs).sum(0)
             logits = -torch.cdist(agg.unsqueeze(0), protos).squeeze(0) ** 2 / temperature
-            loss = F.cross_entropy(logits.unsqueeze(0),
-                                   torch.tensor([true_c]))
+            loss = F.cross_entropy(logits.unsqueeze(0), torch.tensor([true_c]))
+            if entropy_reg > 0.0:
+                # (w·log w) = −entropy; minimising it pulls weights toward uniform.
+                loss = loss + entropy_reg * (w * w.clamp(min=1e-9).log()).sum()
             opt.zero_grad()
             loss.backward()
             opt.step()
