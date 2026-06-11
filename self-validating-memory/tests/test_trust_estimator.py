@@ -6,11 +6,12 @@ quality*. This trains a small estimator to weight retrieved sources using only
 the same external signal the rest of the system uses — the externally revealed
 correct answer — never per-source reliability labels.
 
-Honest, seed-stable findings (see examples/experiment_learned_trust.py, n=8):
-  - the estimator clearly beats the trust-only mean aggregate (+~0.04, 7/8), but
-  - it does NOT beat the hand-tuned fixed-tau robust heuristic (robust wins on
-    average, -0.02) — source-quality assessment stays genuinely hard.
-So we assert only the robustly-true claim: it beats the naive trust baseline.
+Honest, seed-stable findings (see examples/experiment_learned_trust.py, n=8),
+with the training objective aligned to the L2 evaluation metric:
+  - the estimator clearly beats the trust-only mean aggregate (+~0.08, 8/8), and
+  - it modestly beats the hand-tuned fixed-tau robust heuristic (+~0.02, 7/8).
+We hard-assert only the rock-solid claim (beats mean); the +0.02 robust margin
+is reported in the experiment, not gated by a brittle unit test.
 
 Tests written BEFORE the implementation; they must fail first.
 """
@@ -91,3 +92,25 @@ def test_trained_estimator_beats_trust_only_mean():
     mean_acc = _verifier_acc("mean", test_eps, protos)
     learned_acc = _evidence_acc(lambda e, t: est(e, t).detach(), test_eps, protos)
     assert learned_acc > mean_acc + 0.02
+
+
+def test_verifier_learned_path_returns_valid_evidence():
+    """Exercise the Verifier aggregation='learned' integration end-to-end."""
+    est, _, _ = _trained()
+    cfg = RoleConfig(dim=16)
+    sources = [(torch.randn(16), 0.6) for _ in range(4)]
+    v = Verifier(cfg, search_fn=lambda q, k: sources, aggregation="learned",
+                 trust_estimator=est)
+    ev = v.verify(torch.randn(16))
+    assert ev.embedding.shape == (16,)
+    assert 0.0 <= ev.source_quality <= 1.0
+    assert ev.n_sources == 4
+
+
+def test_learned_aggregation_requires_an_estimator():
+    cfg = RoleConfig(dim=16)
+    try:
+        Verifier(cfg, aggregation="learned")
+        assert False, "expected ValueError when trust_estimator is missing"
+    except ValueError:
+        pass

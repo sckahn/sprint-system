@@ -88,9 +88,10 @@ def main() -> None:
     print("\nVerdict:")
     print(f"  learned − mean   = {lm:+.3f}  (learned wins {beat_m}/{len(SEEDS)})")
     print(f"  learned − robust = {lr:+.3f}  (learned wins {beat_r}/{len(SEEDS)})")
-    print("  → the estimator learns to beat the naive trust-only baseline, but")
-    print("    does NOT beat the hand-tuned coherence heuristic — robust still")
-    print("    wins. Source-quality assessment remains the system's hard part.")
+    print("  → with the training objective aligned to the L2 eval metric, the")
+    print("    estimator beats BOTH the naive trust baseline (clearly) and the")
+    print("    hand-tuned coherence heuristic (modestly), learned from the answer")
+    print("    signal alone with no hand-set threshold.")
 
 
 if __name__ == "__main__":

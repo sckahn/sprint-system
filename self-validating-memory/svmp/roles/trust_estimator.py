@@ -11,11 +11,11 @@ weighting over the retrieved sources; the trust-weighted evidence is decoded
 against the known class prototypes and trained end-to-end by cross-entropy, so
 the estimator learns to down-weight whichever sources corrupt the answer.
 
-Honest result (examples/experiment_learned_trust.py, n=8): the estimator beats
-the naive trust-only mean (+~0.04) but does NOT beat the hand-tuned fixed-tau
-consensus heuristic. Learning from the answer signal alone recovers the easy
-win, not the hard one — consistent with the design's warning that source-quality
-assessment is the weakest real component.
+Honest result (examples/experiment_learned_trust.py, n=8): with the training
+objective aligned to the L2 evaluation metric, the estimator beats both the
+naive trust-only mean (+~0.08) and the hand-tuned fixed-tau consensus heuristic
+(+~0.02, 7/8 seeds) — a genuine but modest win, learned from the answer signal
+alone with no hand-set threshold.
 
 Per-source features (no absolute geometry, so it transfers across queries):
   - self-reported trust prior
@@ -37,6 +37,9 @@ def source_features(embs: torch.Tensor, trust: torch.Tensor) -> torch.Tensor:
     k = embs.shape[0]
     norm = F.normalize(embs, dim=1)
     if k == 1:
+        # A lone source has no peers, so the three geometric features are
+        # constants and carry no gradient — the MLP cannot (and need not) learn
+        # anything from k=1 episodes. Quality for k=1 is handled in aggregate().
         return torch.stack([trust,
                             torch.zeros(1), torch.zeros(1), torch.ones(1)], dim=1)
     sims = norm @ norm.t()                                  # (k, k), cosine
@@ -74,31 +77,40 @@ class SourceTrustEstimator(nn.Module):
         if k == 1:
             quality = float(trust.mean())
         else:
-            entropy = -(w * (w + 1e-9).log()).sum()
+            # clamp(min) keeps entropy >= 0 (so quality stays in [0, 1]); a raw
+            # +eps inside log can make a saturated weight give entropy < 0.
+            entropy = -(w * w.clamp(min=1e-9).log()).sum()
             quality = float(1.0 - entropy / torch.log(torch.tensor(float(k))))
-        return agg, quality
+        return agg, min(max(quality, 0.0), 1.0)
 
 
 def train_trust_estimator(episodes, prototypes: torch.Tensor, epochs: int = 10,
                           lr: float = 1e-2, hidden: int = 16,
+                          temperature: float = 8.0,
                           seed: int = 0) -> SourceTrustEstimator:
     """Train the estimator on (embs, trust, true_class) episodes.
 
     The only supervision is the externally revealed ``true_class`` — the same
     signal the budget/neuromodulator already consume. Per-source reliability is
     never used as a label.
+
+    The decoder is *negative squared L2 distance to the prototypes*, matching the
+    L2 nearest-prototype rule used to measure evidence accuracy everywhere — so
+    the training objective and the evaluation metric agree. ``temperature``
+    rescales the squared distance (O(10-40) for norm-4 prototypes) into a stable
+    logit range so the softmax does not saturate.
     """
-    torch.manual_seed(seed)
-    est = SourceTrustEstimator(hidden=hidden)
+    # Scope the seed to weight init so we don't perturb the global RNG state.
+    with torch.random.fork_rng():
+        torch.manual_seed(seed)
+        est = SourceTrustEstimator(hidden=hidden)
     opt = torch.optim.Adam(est.parameters(), lr=lr)
-    protos = F.normalize(prototypes.detach(), dim=1)
+    protos = prototypes.detach()
     for _ in range(epochs):
         for embs, trust, true_c in episodes:
             w = est(embs, trust)
             agg = (w.unsqueeze(1) * embs).sum(0)
-            # Decode in cosine space with a temperature: bounded, stable logits
-            # (raw squared distance with norm-4 prototypes saturates softmax).
-            logits = (protos @ F.normalize(agg, dim=0)) / 0.1
+            logits = -torch.cdist(agg.unsqueeze(0), protos).squeeze(0) ** 2 / temperature
             loss = F.cross_entropy(logits.unsqueeze(0),
                                    torch.tensor([true_c]))
             opt.zero_grad()

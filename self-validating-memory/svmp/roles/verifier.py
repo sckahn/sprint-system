@@ -66,7 +66,8 @@ class Verifier:
         if self.aggregation == "learned":
             with torch.no_grad():
                 agg, quality = self.trust_estimator.aggregate(embs, raw_trust)
-            return Evidence(agg, quality, len(results), quality)
+            # Keep ``agreement`` meaning cross-source agreement on every path.
+            return Evidence(agg, quality, len(results), self._agreement(embs))
         agreement = self._agreement(embs)
         quality = self.assess_source(raw_trust, agreement)
         # Trust-weighted evidence aggregate.
