@@ -42,14 +42,18 @@ SearchFn = Callable[[torch.Tensor, int], Sequence[tuple[torch.Tensor, float]]]
 class Verifier:
     def __init__(self, cfg: RoleConfig, search_fn: SearchFn | None = None,
                  generator: torch.Generator | None = None,
-                 aggregation: str = "robust", consensus_tau: float = 0.5):
-        if aggregation not in ("mean", "robust"):
+                 aggregation: str = "robust", consensus_tau: float = 0.5,
+                 trust_estimator=None):
+        if aggregation not in ("mean", "robust", "learned"):
             raise ValueError(f"unknown aggregation: {aggregation}")
+        if aggregation == "learned" and trust_estimator is None:
+            raise ValueError("aggregation='learned' requires a trust_estimator")
         self.cfg = cfg
         self.search_fn = search_fn or self._simulated_search
         self.gen = generator or torch.Generator().manual_seed(0)
         self.aggregation = aggregation
         self.consensus_tau = consensus_tau
+        self.trust_estimator = trust_estimator
 
     def verify(self, query: torch.Tensor) -> Evidence:
         results = self.search_fn(query, self.cfg.triangulation_k)
@@ -59,6 +63,10 @@ class Verifier:
         raw_trust = torch.tensor([t for _, t in results])
         if self.aggregation == "robust":
             return self._verify_robust(embs, raw_trust)
+        if self.aggregation == "learned":
+            with torch.no_grad():
+                agg, quality = self.trust_estimator.aggregate(embs, raw_trust)
+            return Evidence(agg, quality, len(results), quality)
         agreement = self._agreement(embs)
         quality = self.assess_source(raw_trust, agreement)
         # Trust-weighted evidence aggregate.
