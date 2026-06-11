@@ -25,7 +25,9 @@ class DocumentCorpus:
 
     def __init__(self, prototypes: torch.Tensor, docs_per_class: int = 20,
                  unreliable_frac: float = 0.4, noise: float = 0.2,
-                 seed: int = 0):
+                 reliable_trust_mu: float = 0.72,
+                 unreliable_trust_mu: float = 0.58,
+                 trust_std: float = 0.12, seed: int = 0):
         g = torch.Generator().manual_seed(seed)
         n_classes, dim = prototypes.shape
         embs, trust, reliable = [], [], []
@@ -40,11 +42,12 @@ class DocumentCorpus:
                         other = (other + 1) % n_classes
                     base = 0.4 * base + 0.6 * prototypes[other]
                 emb = base + noise * torch.randn(dim, generator=g)
-                # Trust priors overlap: reliability is NOT readable from the
-                # prior alone — triangulation must do the work.
-                mu = 0.72 if is_reliable else 0.58
+                # Trust priors. Set the two mus equal for an *uninformative*
+                # prior: then reliability is NOT readable from the prior at all
+                # and triangulation (cross-source agreement) must do the work.
+                mu = reliable_trust_mu if is_reliable else unreliable_trust_mu
                 t = float(torch.clamp(
-                    mu + 0.12 * torch.randn(1, generator=g), 0.05, 0.95))
+                    mu + trust_std * torch.randn(1, generator=g), 0.05, 0.95))
                 embs.append(emb)
                 trust.append(t)
                 reliable.append(is_reliable)
