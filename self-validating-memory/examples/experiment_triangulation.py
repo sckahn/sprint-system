@@ -79,11 +79,12 @@ def probe(seed: int, prior: str, verifier: str) -> dict:
     cfg = RoleConfig(dim=task.feature_dim)
     if verifier == "naive":
         cfg.triangulation_k = 1
-        v = NaiveVerifier(cfg, search_fn=retriever,
+        v = NaiveVerifier(cfg, search_fn=retriever, aggregation="mean",
                           generator=torch.Generator().manual_seed(seed))
     else:
+        # Baseline triangulation = mean aggregate + agreement-based quality.
         cfg.triangulation_k = 3
-        v = Verifier(cfg, search_fn=retriever,
+        v = Verifier(cfg, search_fn=retriever, aggregation="mean",
                      generator=torch.Generator().manual_seed(seed))
 
     q_correct, q_wrong = [], []

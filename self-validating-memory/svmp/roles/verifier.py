@@ -41,10 +41,15 @@ SearchFn = Callable[[torch.Tensor, int], Sequence[tuple[torch.Tensor, float]]]
 
 class Verifier:
     def __init__(self, cfg: RoleConfig, search_fn: SearchFn | None = None,
-                 generator: torch.Generator | None = None):
+                 generator: torch.Generator | None = None,
+                 aggregation: str = "robust", consensus_tau: float = 0.5):
+        if aggregation not in ("mean", "robust"):
+            raise ValueError(f"unknown aggregation: {aggregation}")
         self.cfg = cfg
         self.search_fn = search_fn or self._simulated_search
         self.gen = generator or torch.Generator().manual_seed(0)
+        self.aggregation = aggregation
+        self.consensus_tau = consensus_tau
 
     def verify(self, query: torch.Tensor) -> Evidence:
         results = self.search_fn(query, self.cfg.triangulation_k)
@@ -52,12 +57,44 @@ class Verifier:
             return Evidence(torch.zeros(self.cfg.dim), 0.0, 0, 0.0)
         embs = torch.stack([e.flatten() for e, _ in results])
         raw_trust = torch.tensor([t for _, t in results])
+        if self.aggregation == "robust":
+            return self._verify_robust(embs, raw_trust)
         agreement = self._agreement(embs)
         quality = self.assess_source(raw_trust, agreement)
         # Trust-weighted evidence aggregate.
         w = torch.softmax(raw_trust, dim=0).unsqueeze(1)
         agg = (w * embs).sum(0)
         return Evidence(agg, quality, len(results), agreement)
+
+    # --- robust consensus aggregation (Phase 4 improvement) ----------------
+    def _verify_robust(self, embs: torch.Tensor,
+                       raw_trust: torch.Tensor) -> Evidence:
+        """Aggregate only the *consensus cluster* of sources.
+
+        Truth is assumed coherent and lies diverse: the source that agrees with
+        the most others (the medoid) anchors a consensus set, and incoherent
+        outliers are dropped from both the aggregate and the quality score. This
+        keeps a diverse liar from corrupting the verified evidence even when the
+        trust prior carries no information.
+        """
+        n = embs.shape[0]
+        if n == 1:
+            quality = self.assess_source(raw_trust, 0.0)
+            return Evidence(embs[0], quality, 1, 0.0)
+        norm = torch.nn.functional.normalize(embs, dim=1)
+        sims = norm @ norm.t()                                  # cosine, [-1, 1]
+        support = (sims >= self.consensus_tau).float().sum(1)   # incl. self
+        medoid = int(support.argmax())
+        consensus = sims[medoid] >= self.consensus_tau          # (n,) bool mask
+
+        cw = torch.softmax(raw_trust[consensus], dim=0).unsqueeze(1)
+        agg = (cw * embs[consensus]).sum(0)
+
+        frac = float(consensus.float().mean())                  # corroboration mass
+        within = self._agreement(embs[consensus])               # tightness, [0,1]
+        mean_trust = float(raw_trust[consensus].mean())
+        quality = float(min(max(frac * mean_trust * within, 0.0), 1.0))
+        return Evidence(agg, quality, n, within)
 
     # --- the hard part -----------------------------------------------------
     def assess_source(self, raw_trust: torch.Tensor, agreement: float) -> float:

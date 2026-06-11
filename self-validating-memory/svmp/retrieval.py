@@ -27,7 +27,14 @@ class DocumentCorpus:
                  unreliable_frac: float = 0.4, noise: float = 0.2,
                  reliable_trust_mu: float = 0.72,
                  unreliable_trust_mu: float = 0.58,
-                 trust_std: float = 0.12, seed: int = 0):
+                 trust_std: float = 0.12, mislead_blend: float = 0.6,
+                 seed: int = 0):
+        # ``mislead_blend`` controls how adversarial misleading docs are: it is
+        # the weight pulled toward the wrong class. Low blend ⇒ docs stay near
+        # their true class (retrievable but barely misleading); high blend ⇒
+        # strongly wrong but rarely retrieved. The dangerous regime is in
+        # between, where misleading docs both intrude into top-k AND corrupt the
+        # aggregate — exactly where robust consensus aggregation earns its keep.
         g = torch.Generator().manual_seed(seed)
         n_classes, dim = prototypes.shape
         embs, trust, reliable = [], [], []
@@ -40,7 +47,7 @@ class DocumentCorpus:
                     other = int(torch.randint(n_classes, (1,), generator=g))
                     if other == c:
                         other = (other + 1) % n_classes
-                    base = 0.4 * base + 0.6 * prototypes[other]
+                    base = (1 - mislead_blend) * base + mislead_blend * prototypes[other]
                 emb = base + noise * torch.randn(dim, generator=g)
                 # Trust priors. Set the two mus equal for an *uninformative*
                 # prior: then reliability is NOT readable from the prior at all
