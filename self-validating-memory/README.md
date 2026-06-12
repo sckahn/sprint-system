@@ -83,7 +83,8 @@ GrowingVault.consolidate (게이트 열릴 때만) + decay (망각)
 | `svmp/roles/verifier.py` | `Verifier` — 외부검색 + 출처품질 평가 (mean/robust/learned 집계) | §3,§4 |
 | `svmp/roles/trust_estimator.py` | `SourceTrustEstimator` — 학습 가능한 출처 가중치 (엔트로피 prior) | §4 |
 | `svmp/roles/adversarial.py` | `AdversarialLoop`, `SelfPlay`(Phase 5 스켈레톤) | §3 |
-| `svmp/retrieval.py` | `CorpusRetriever`, `DocumentCorpus` — 실 retriever 인터페이스 | §4 |
+| `svmp/retrieval.py` | `CorpusRetriever`, `DocumentCorpus` — 합성 코퍼스 | §4 |
+| `svmp/real_retriever.py` | `EmbeddingRetriever` + 20newsgroups·MiniLM 로더 — 실제 검색 | §4 |
 | `svmp/calibration.py` | `CalibrationHead`, Jeopardy 베팅, ECE | §4.6 |
 | `svmp/model.py` | `SelfValidatingModel` — 미분 가능한 신경 코어 | §7 |
 | `svmp/agent.py` | `SelfValidatingAgent` — 전체 스텝 오케스트레이션 | §6 |
@@ -266,11 +267,38 @@ TDD로 구현했다. *진실은 일관되고 거짓은 다양하다*는 가정 �
 reg=0 추정기는 digits에서 −0.033 손해(음의 전이), reg=0.1은 −0.002로 **패리티 회복**
 하면서 적대 레짐 이득(0.724)은 그대로다. 즉 추정기는 *기본은 평균, 필요할 때만 선택*.
 
-> **Phase 4 종합**: ① 기본 삼각측량은 무정보 사전에서 chance 근처 → ② robust 합의는
-> 적대적 레짐에서만 +0.04 → ③ 학습 추정기는 (지표 정렬 후) naive·robust 모두 능가,
-> 단 양성 검색엔 음의 전이 → ④ 엔트로피 prior로 두 레짐 모두 안전.
-> 출처품질 평가는 어렵지만, *외부 정답 신호만으로 손튜닝 휴리스틱을 학습으로 따라잡고
-> 넘어설 수 있다*는 건설적 결론에 도달.
+#### 실제 연결 — 진짜 텍스트·임베딩·검색 (`experiment_real_retriever.py`)
+
+합성 코퍼스를 버리고 **완전한 실제 파이프라인**을 붙였다:
+- 실 문서: **20 Newsgroups** 뉴스그룹 글
+- 실 임베딩: **sentence-transformer all-MiniLM-L6-v2** (384-d)
+- 실 검색: 코사인 top-k (`svmp/real_retriever.py::EmbeddingRetriever`)
+- 실 감독: 쿼리 글의 진짜 주제 (test 글이 train 코퍼스를 검색 → self-match 없음)
+
+서로 다른 주제(양성) vs 혼동되는 주제(적대) 두 레짐:
+
+| 레짐 | top-5 on-topic | mean | robust | learned |
+|------|------|------|--------|---------|
+| DISTINCT (space·baseball·정치·graphics) | 0.898 | 0.908 | 0.902 | **0.910** |
+| CONFUSABLE (comp.* 4종) | 0.668 | 0.712 | **0.665** ❌ | **0.717** |
+
+**실데이터가 드러낸 것:**
+1. 실제 의미 검색은 주제가 다르면 매우 양성(90% on-topic) → 세 방법 거의 동률.
+2. 혼동 주제(comp.* — pc/mac/windows/x)는 실제로 적대적(67% on-topic) → 방법이 갈린다.
+3. **손튜닝 robust가 실제 적대 검색에서 오히려 손해**(−0.047 vs mean) — 합성에서 좋아
+   보이던 휴리스틱의 sim2real 격차. 경직된 τ 합의가 실데이터에선 유용 신호를 버린다.
+4. **엔트로피-prior learned만 두 레짐 모두 안전** — 양성=mean, 적대=robust보다 +0.052.
+
+즉 학습 추정기의 실데이터 가치는 *큰 이득*이 아니라 **레짐 무관 안전성**이다: robust처럼
+망가지지 않고 항상 평균 이상을 지킨다. 실행: `pip install -r requirements-real.txt &&
+PYTHONPATH=. OMP_NUM_THREADS=1 python examples/experiment_real_retriever.py`
+(임베딩은 `examples/.cache/`에 캐시).
+
+> **Phase 4 종합 (5단계)**: ① 기본 삼각측량 → 무정보 사전서 chance 근처 · ② robust 합의
+> → 합성 적대만 +0.04 · ③ 학습 추정기 → (지표 정렬 후) 합성서 naive·robust 능가 ·
+> ④ 엔트로피 prior → 음의 전이 차단 · ⑤ **실 retriever → robust는 실 적대서 손해,
+> learned만 두 레짐 안전**. 결론: 출처품질 평가는 어렵고 손튜닝 휴리스틱은 sim2real
+> 격차가 있지만, *외부 정답 신호만으로 학습한 추정기는 실데이터에서 가장 안전한 선택*.
 
 ---
 
@@ -278,19 +306,20 @@ reg=0 추정기는 digits에서 −0.033 손해(음의 전이), reg=0.1은 −0.
 
 ```bash
 pip install pytest
-python -m pytest -q          # 35 passed
+python -m pytest -q          # 39 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,
-실 retriever 출처품질, robust 합의 집계(이상치 무시·증거정확도 개선), 학습 추정기
-(naive 베이스라인 능가), end-to-end 학습(정확도 > chance, 생존)을 검증한다.
+출처품질 평가, robust 합의 집계(이상치 무시·증거정확도 개선), 학습 추정기(naive 능가·
+엔트로피 정규화), 실 EmbeddingRetriever(코사인 top-k), end-to-end 학습(정확도 >
+chance, 생존)을 검증한다. 실 retriever 실험은 다운로드가 필요해 테스트엔 미포함.
 
 ---
 
 ## 한계 / 다음 단계
 
-- `Verifier`의 외부 검색은 시뮬레이터 또는 `CorpusRetriever`(합성 코퍼스) — 실
-  retriever(임베딩 DB·웹) 주입 가능하나 미연결
+- 실 retriever 연결됨(`EmbeddingRetriever` + 20newsgroups·MiniLM); 웹 검색 API는 미연결
+- 손튜닝 robust는 실 적대 검색에서 손해(sim2real 격차) — learned가 더 안전
 - robust 합의 집계는 거짓이 코사인-분리 가능한 기하에서만 유효 — 양성 검색엔 no-op
 - 학습 추정기 효과는 modest(+0.02 vs robust); 양성 검색엔 엔트로피 prior로 패리티만
   (이득 없음). 실데이터 검증은 합성 코퍼스(`DocumentCorpus`) 한정 — 실 임베딩 DB·웹 미연결
