@@ -112,7 +112,7 @@
 | **2** | 예산 경제 + MoE 결합 — 전문가 붕괴 회피 | `budget.py` × `moe.py`, load-balance loss |
 | **3** | 건축가/수집가 GAN — 적대적 가설-검증 루프 | `roles/adversarial.py` |
 | **4** | 검증 에이전트 + 자라는 창고 — 검색 검증 인식적 성장, 삼각측량 | `roles/verifier.py` + `vault.py` |
-| **5** | 2층 자기놀이 개척 — 정답키 없는 도메인, Phase1 value net을 심판으로 | `roles/adversarial.py::SelfPlay` (스켈레톤) |
+| **5** | 2층 자기놀이 개척 — 정답키 없는 도메인, Phase1 value net을 심판으로 | `selfplay.py::{SelfPlayJudge, train_judge, self_play}` + `experiment_selfplay.py` |
 
 ---
 

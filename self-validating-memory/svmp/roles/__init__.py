@@ -1,5 +1,5 @@
 """Adversarial roles: Architect, Collector, Verifier and their loop."""
-from .adversarial import AdversarialLoop, LoopResult, SelfPlay
+from .adversarial import AdversarialLoop, LoopResult
 from .architect import Architect
 from .collector import Collector
 from .trust_estimator import SourceTrustEstimator, train_trust_estimator
@@ -12,7 +12,6 @@ __all__ = [
     "Evidence",
     "AdversarialLoop",
     "LoopResult",
-    "SelfPlay",
     "SourceTrustEstimator",
     "train_trust_estimator",
 ]

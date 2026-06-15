@@ -82,9 +82,10 @@ GrowingVault.consolidate (게이트 열릴 때만) + decay (망각)
 | `svmp/roles/collector.py` | `Collector` — 창고 대조 판별기 | §3 |
 | `svmp/roles/verifier.py` | `Verifier` — 외부검색 + 출처품질 평가 (mean/robust/learned 집계) | §3,§4 |
 | `svmp/roles/trust_estimator.py` | `SourceTrustEstimator` — 학습 가능한 출처 가중치 (엔트로피 prior) | §4 |
-| `svmp/roles/adversarial.py` | `AdversarialLoop`, `SelfPlay`(Phase 5 스켈레톤) | §3 |
+| `svmp/roles/adversarial.py` | `AdversarialLoop` — 건축가→수집가→검증가 루프 | §3 |
 | `svmp/retrieval.py` | `CorpusRetriever`, `DocumentCorpus` — 합성 코퍼스 | §4 |
 | `svmp/real_retriever.py` | `EmbeddingRetriever` + 20newsgroups·MiniLM 로더 — 실제 검색 | §4 |
+| `svmp/selfplay.py` | `SelfPlayJudge`, `self_play` — Phase 5 정답키 없는 자기놀이 | §5 |
 | `svmp/calibration.py` | `CalibrationHead`, Jeopardy 베팅, ECE | §4.6 |
 | `svmp/model.py` | `SelfValidatingModel` — 미분 가능한 신경 코어 | §7 |
 | `svmp/agent.py` | `SelfValidatingAgent` — 전체 스텝 오케스트레이션 | §6 |
@@ -120,7 +121,7 @@ GrowingVault.consolidate (게이트 열릴 때만) + decay (망각)
 | 2 | 예산 경제 + MoE | 예산↔top-k 결합, load-balance loss |
 | 3 | 건축가/수집가 GAN | `roles/adversarial.py` |
 | 4 | 검증 에이전트 + 자라는 창고 | `roles/verifier.py` + `vault.py` |
-| 5 | 2층 자기놀이 (정답키 없음) | `roles/adversarial.py::SelfPlay` (스켈레톤) |
+| 5 | 2층 자기놀이 (정답키 없음) | `selfplay.py` — 동결 심판 + keyless 3-인자 자기놀이 |
 
 > ⚠️ 설계가 지목한 **가장 약한 실제 부품**은 GAN 구조가 아니라
 > *"검색 결과 출처 품질 평가 능력"* — `Verifier.assess_source`에 삼각측량 기반으로
@@ -313,19 +314,40 @@ python examples/experiment_real_retriever.py`(단일 split 예시) ·
 > 가치는 *성능 증대*가 아니라 **안전성**(robust처럼 망가지지 않음)이며, 손튜닝 휴리스틱의
 > sim2real 격차를 실험으로 드러낸 것이 핵심 교훈.
 
+### Phase 5 — 정답키 없는 자기놀이 (`experiment_selfplay.py`)
+
+설계 §5: 정답키 없는 도메인엔 외부 oracle이 없으니 **Phase-1에서 외부 검증으로 grounded된
+심판을 동결**해 pseudo-reward로 쓴다. ① 정답키 단계서 reward model(`SelfPlayJudge`)
+학습 → ② 결정헤드 리셋(정확도 붕괴) → ③ **라벨 없이** 동결 심판의 보상으로 3-인자 자기놀이.
+n=5 시드:
+
+| 단계 | 정확도 |
+|------|--------|
+| Phase-1 학습 (상한) | 0.947 ± 0.008 |
+| 결정헤드 리셋 (바닥) | 0.170 ± 0.167 |
+| **keyless 자기놀이 — grounded 심판** | **0.904 ± 0.074** |
+| keyless 자기놀이 — 랜덤 심판 (대조군) | 0.165 ± 0.205 |
+
+**정직한 결론:**
+1. ✅ **동결 grounded 심판으로 정답키 없이 학습 가능** — 바닥 0.17 → 0.90 복구(라벨 0개 사용).
+2. ✅ **랜덤 심판은 바닥 유지(0.165)** → 자기놀이 자체가 아니라 **grounding이 가르친다**.
+3. ⚠️ **상한 격차 −0.043** → 자기놀이는 심판을 못 넘는다. *외부 grounding 너머로는
+   부트스트랩 불가* — SVMP "보상은 외부에서만" 원칙과 일치(self-reward 붕괴 회피).
+
 ---
 
 ## 테스트
 
 ```bash
 pip install pytest
-python -m pytest -q          # 42 passed
+python -m pytest -q          # 44 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,
 출처품질 평가, robust 합의 집계(이상치 무시·증거정확도 개선), 학습 추정기(naive 능가·
-엔트로피 정규화), 실 EmbeddingRetriever(코사인 top-k), end-to-end 학습(정확도 >
-chance, 생존)을 검증한다. 실 retriever 실험은 다운로드가 필요해 테스트엔 미포함.
+엔트로피 정규화), 실 EmbeddingRetriever(코사인 top-k), Phase 5 자기놀이(grounded 심판
+복구 vs 랜덤 심판), end-to-end 학습(정확도 > chance, 생존)을 검증한다. 실 retriever
+실험은 다운로드가 필요해 테스트엔 미포함.
 
 ---
 
@@ -337,5 +359,6 @@ chance, 생존)을 검증한다. 실 retriever 실험은 다운로드가 필요�
 - 학습 추정기 효과는 modest(+0.02 vs robust); 양성 검색엔 엔트로피 prior로 패리티만
   (이득 없음). 실데이터 검증은 합성 코퍼스(`DocumentCorpus`) 한정 — 실 임베딩 DB·웹 미연결
 - 과제는 합성 스캐폴드 + sklearn digits — 메커니즘 시연용이지 벤치마크 아님
-- `SelfPlay`(Phase 5)는 배선만 문서화한 스켈레톤
+- Phase 5 자기놀이는 동결 reward-model 증류 — 심판 품질이 상한(설계 의도). 표현은
+  동결하고 결정헤드만 재학습 — 표현까지 키우는 keyless 학습은 후속 과제
 - 적대적 역할 학습은 단일 옵티마이저 동시경사 근사 (정식 alternating minimax 아님)

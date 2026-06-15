@@ -65,20 +65,7 @@ class AdversarialLoop:
         return LoopResult(hypo, support, verified, src_q, evidence)
 
 
-class SelfPlay:
-    """Phase 5 skeleton: answer-key-free domains judged by a frozen value net.
-
-    In keyless domains there is no external oracle, so the Phase-1 calibration
-    value network acts as the judge. This is a thin scaffold that documents the
-    intended wiring; full self-play curricula are future work.
-    """
-
-    def __init__(self, loop: AdversarialLoop, value_net):
-        self.loop = loop
-        self.value_net = value_net  # frozen Phase-1 calibrator used as judge
-
-    def judge(self, x: torch.Tensor, retrieved: torch.Tensor) -> float:
-        """Return a pseudo-reward from the frozen judge in [-1, 1]."""
-        with torch.no_grad():
-            v = self.value_net(torch.cat([x.flatten(), retrieved.flatten()]))
-        return float(torch.tanh(v).mean())
+# Phase 5 self-play (answer-key-free domains judged by a frozen Phase-1 net) is
+# now a full implementation in svmp/selfplay.py — SelfPlayJudge / train_judge /
+# self_play. It is re-exported here for backward compatibility.
+from ..selfplay import SelfPlayJudge, reset_decision_head, self_play, train_judge  # noqa: E402,F401
