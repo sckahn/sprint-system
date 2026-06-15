@@ -275,30 +275,43 @@ reg=0 추정기는 digits에서 −0.033 손해(음의 전이), reg=0.1은 −0.
 - 실 검색: 코사인 top-k (`svmp/real_retriever.py::EmbeddingRetriever`)
 - 실 감독: 쿼리 글의 진짜 주제 (test 글이 train 코퍼스를 검색 → self-match 없음)
 
-서로 다른 주제(양성) vs 혼동되는 주제(적대) 두 레짐:
+서로 다른 주제(양성) vs 혼동되는 주제(적대) 두 레짐 — **n=12 random split, paired**
+(`experiment_real_significance.py`):
 
-| 레짐 | top-5 on-topic | mean | robust | learned |
-|------|------|------|--------|---------|
-| DISTINCT (space·baseball·정치·graphics) | 0.898 | 0.908 | 0.902 | **0.910** |
-| CONFUSABLE (comp.* 4종) | 0.668 | 0.712 | **0.665** ❌ | **0.717** |
+**CONFUSABLE (적대, comp.* 4종, on-topic 0.67):**
 
-**실데이터가 드러낸 것:**
-1. 실제 의미 검색은 주제가 다르면 매우 양성(90% on-topic) → 세 방법 거의 동률.
-2. 혼동 주제(comp.* — pc/mac/windows/x)는 실제로 적대적(67% on-topic) → 방법이 갈린다.
-3. **손튜닝 robust가 실제 적대 검색에서 오히려 손해**(−0.047 vs mean) — 합성에서 좋아
-   보이던 휴리스틱의 sim2real 격차. 경직된 τ 합의가 실데이터에선 유용 신호를 버린다.
-4. **엔트로피-prior learned만 두 레짐 모두 안전** — 양성=mean, 적대=robust보다 +0.052.
+| 비교 | Δ (n=12) | 승률 | t | 결론 |
+|------|----------|------|-----|------|
+| learned − mean | **−0.002 ± 0.006** | 5/12 | −0.96 | ❌ 유의하지 않음 |
+| learned − robust | +0.052 ± 0.008 | 12/12 | +23.3 | ✅ 매우 유의 |
+| robust − mean | −0.053 ± 0.009 | 0/12 | −20.1 | ✅ 매우 유의 |
 
-즉 학습 추정기의 실데이터 가치는 *큰 이득*이 아니라 **레짐 무관 안전성**이다: robust처럼
-망가지지 않고 항상 평균 이상을 지킨다. 실행: `pip install -r requirements-real.txt &&
-PYTHONPATH=. OMP_NUM_THREADS=1 python examples/experiment_real_retriever.py`
+**DISTINCT (양성, on-topic 0.90):** 세 비교 모두 |Δ|<0.002, |t|<1 → 통계적으로 동일.
+
+**실데이터가 드러낸 것 (엄밀):**
+1. ❌ **learned는 mean 대비 성능 증대 없음** (Δ=−0.002, t=−0.96). 합성서 mean을 +0.08
+   이기던 이득이 실데이터로 **전이 안 됨** — 단일 split의 +0.005는 노이즈였다(코드리뷰가
+   단일 시드 과장을 지적 → n=12로 확인).
+2. ✅ **손튜닝 robust는 실 적대 검색에서 확실히 손해** (Δ=−0.053, t=−20, 0/12). 합성서
+   좋아 보이던 휴리스틱의 **sim2real 격차** — 경직된 τ 합의가 실데이터선 유용 신호를 버린다.
+3. ✅ **learned > robust** (Δ=+0.052, 12/12). 단 이는 learned가 mean과 같고 robust가
+   mean보다 나빠서지, learned가 mean을 넘어서가 아니다.
+
+**정직한 결론**: 실데이터에선 **단순 평균(mean)이 강력한 베이스라인**이고 어떤 정교한
+집계도 이를 통계적으로 못 넘는다. 학습 추정기의 가치는 *성능 증대*가 아니라 **안전성**
+— robust처럼 망가지지 않고 항상 mean과 동급을 지킨다. 실행:
+`pip install -r requirements-real.txt && PYTHONPATH=. OMP_NUM_THREADS=1 \
+python examples/experiment_real_retriever.py`(단일 split 예시) ·
+`… experiment_real_significance.py`(n=12 검정)
 (임베딩은 `examples/.cache/`에 캐시).
 
 > **Phase 4 종합 (5단계)**: ① 기본 삼각측량 → 무정보 사전서 chance 근처 · ② robust 합의
 > → 합성 적대만 +0.04 · ③ 학습 추정기 → (지표 정렬 후) 합성서 naive·robust 능가 ·
-> ④ 엔트로피 prior → 음의 전이 차단 · ⑤ **실 retriever → robust는 실 적대서 손해,
-> learned만 두 레짐 안전**. 결론: 출처품질 평가는 어렵고 손튜닝 휴리스틱은 sim2real
-> 격차가 있지만, *외부 정답 신호만으로 학습한 추정기는 실데이터에서 가장 안전한 선택*.
+> ④ 엔트로피 prior → 음의 전이 차단 · ⑤ **실 retriever(n=12) → mean이 강력해 learned는
+> 증대 없음(≈mean), robust는 실 적대서 유의하게 손해**. 결론: 합성서 보이던 이득은
+> 실데이터로 전이되지 않고 단순 평균이 강한 베이스라인이다. 학습 추정기의 실데이터
+> 가치는 *성능 증대*가 아니라 **안전성**(robust처럼 망가지지 않음)이며, 손튜닝 휴리스틱의
+> sim2real 격차를 실험으로 드러낸 것이 핵심 교훈.
 
 ---
 
@@ -306,7 +319,7 @@ PYTHONPATH=. OMP_NUM_THREADS=1 python examples/experiment_real_retriever.py`
 
 ```bash
 pip install pytest
-python -m pytest -q          # 39 passed
+python -m pytest -q          # 42 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,

@@ -42,23 +42,29 @@ class EmbeddingRetriever:
         q = F.normalize(query_emb.flatten(), dim=0)
         sims = self._norm @ q
         k = min(k, self.embeddings.shape[0])
-        top = torch.topk(sims, k)
-        idx = top.indices
+        idx = torch.topk(sims, k).indices
         self.last_labels = self.labels[idx]
-        out = []
-        for i in idx:
-            if self.trust_mode == "score":
-                trust = float((sims[i] + 1.0) / 2.0)
-            else:
-                trust = self.trust_value
-            out.append((self.embeddings[i], trust))
-        return out
+        if self.trust_mode == "score":
+            trusts = ((sims[idx] + 1.0) / 2.0).tolist()
+        else:
+            trusts = [self.trust_value] * len(idx)
+        return list(zip(self.embeddings[idx].unbind(0), trusts))
 
 
 def topic_centroids(embeddings: torch.Tensor, labels: torch.Tensor,
                     n_classes: int) -> torch.Tensor:
-    """Mean embedding per class — the prototypes used to score evidence."""
-    return torch.stack([embeddings[labels == c].mean(0) for c in range(n_classes)])
+    """Mean embedding per class — the prototypes used to score evidence.
+
+    Raises if a class has no documents (an empty mean would be a silent NaN that
+    poisons every downstream cdist/argmin).
+    """
+    centroids = []
+    for c in range(n_classes):
+        subset = embeddings[labels == c]
+        if subset.shape[0] == 0:
+            raise ValueError(f"class {c} has no documents — cannot form a centroid")
+        centroids.append(subset.mean(0))
+    return torch.stack(centroids)
 
 
 # --- lazy "real connection" helpers (optional heavy deps) ------------------

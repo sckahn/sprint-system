@@ -46,7 +46,14 @@ def _embed_cached(texts, tag):
     os.makedirs(CACHE, exist_ok=True)
     path = os.path.join(CACHE, f"{tag}.pt")
     if os.path.exists(path):
-        return torch.load(path)
+        emb = torch.load(path)
+        # Guard against a stale cache (e.g. max_per_class changed): the row count
+        # must match the freshly loaded texts or labels/embeddings desync.
+        if emb.shape[0] != len(texts):
+            raise RuntimeError(
+                f"stale embedding cache at {path}: {emb.shape[0]} rows vs "
+                f"{len(texts)} texts — delete examples/.cache/ and re-run")
+        return emb
     emb = embed_texts(texts)
     torch.save(emb, path)
     return emb
@@ -94,10 +101,16 @@ def run(categories, tag, label):
         coh.append(float((retr.last_labels == int(l)).float().mean()))
     on_topic = sum(coh) / len(coh)
 
-    h = len(q_labels) // 2
-    train_eps = _episodes(retr, q_emb[:h], q_labels[:h])
+    # Stratified train/eval split so class balance can't confound the comparison.
+    from sklearn.model_selection import train_test_split
+    tr_idx, ev_idx = train_test_split(range(len(q_labels)), test_size=0.5,
+                                      stratify=q_labels.numpy(), random_state=0)
+    tr_idx, ev_idx = torch.tensor(tr_idx), torch.tensor(ev_idx)
+    train_eps = _episodes(retr, q_emb[tr_idx], q_labels[tr_idx])
+    # temperature=0.5: embeddings are unit-normalized here, so squared-L2 ∈ [0,4]
+    # (vs ~[0,40] for the synthetic norm-4 protos where the 8.0 default fits).
     est = train_trust_estimator(train_eps, protos, epochs=15, temperature=0.5)
-    ev_emb, ev_lab = q_emb[h:], q_labels[h:]
+    ev_emb, ev_lab = q_emb[ev_idx], q_labels[ev_idx]
     mean = _evidence_acc(retr, protos, ev_emb, ev_lab, "mean")
     robust = _evidence_acc(retr, protos, ev_emb, ev_lab, "robust")
     learned = _evidence_acc(retr, protos, ev_emb, ev_lab, "learned", est=est)

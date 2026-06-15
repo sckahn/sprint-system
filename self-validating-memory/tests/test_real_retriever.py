@@ -34,11 +34,41 @@ def test_score_trust_mode_orders_by_similarity():
     assert out[0][1] > out[1][1]                     # closer doc ⇒ higher trust
 
 
-def test_topic_centroids_shape():
+def test_topic_centroids_shape_and_no_nan():
+    torch.manual_seed(42)
+    labels = torch.arange(4).repeat(5)            # exactly 5 docs per class
     embs = torch.randn(20, 8)
-    labels = torch.randint(0, 4, (20,))
     c = topic_centroids(embs, labels, 4)
     assert c.shape == (4, 8)
+    assert not c.isnan().any()
+
+
+def test_topic_centroids_raises_on_empty_class():
+    embs = torch.randn(6, 8)
+    labels = torch.tensor([0, 0, 0, 1, 1, 1])     # class 2 absent
+    try:
+        topic_centroids(embs, labels, 3)
+        assert False, "expected ValueError for an empty class"
+    except ValueError:
+        pass
+
+
+def test_k_larger_than_corpus_is_clamped():
+    embs = torch.randn(3, 8)
+    labels = torch.tensor([0, 1, 2])
+    r = EmbeddingRetriever(embs, labels)
+    assert len(r(torch.randn(8), k=10)) == 3
+
+
+def test_uniform_trust_preserves_value_and_updates_last_labels():
+    embs = torch.tensor([[1., 0], [0.9, 0.1], [0., 1.]])
+    labels = torch.tensor([5, 5, 7])
+    r = EmbeddingRetriever(embs, labels, trust_mode="uniform", trust_value=0.42)
+    out = r(torch.tensor([1., 0]), k=2)
+    assert all(t == 0.42 for _, t in out)
+    assert r.last_labels.tolist() == [5, 5]
+    r(torch.tensor([0., 1.]), k=1)               # state updates each call
+    assert r.last_labels.tolist() == [7]
 
 
 def test_plugs_into_verifier():
