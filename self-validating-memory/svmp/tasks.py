@@ -10,6 +10,39 @@ from __future__ import annotations
 import torch
 
 
+class SplitContinualTask:
+    """Class-incremental continual learning (for the catastrophic-forgetting study).
+
+    ``n_classes`` are split into ``n_tasks`` disjoint groups. Task ``t`` emits only
+    its class subset, so the agent sees a non-stationary stream A→B→C…. Each class
+    has a fixed prototype, so a class re-appears in the same input region whenever
+    it is evaluated — which is what lets an external memory (the vault) retain it
+    while the shared decision head drifts onto later tasks.
+    """
+
+    def __init__(self, n_classes: int = 8, n_tasks: int = 2,
+                 feature_dim: int = 16, seed: int = 0):
+        if n_classes % n_tasks != 0:
+            raise ValueError("n_classes must be divisible by n_tasks")
+        self.n_classes = n_classes
+        self.n_tasks = n_tasks
+        self.feature_dim = feature_dim
+        per = n_classes // n_tasks
+        self.task_classes = [list(range(t * per, (t + 1) * per))
+                             for t in range(n_tasks)]
+        g = torch.Generator().manual_seed(seed)
+        self.prototypes = torch.randn(n_classes, feature_dim, generator=g)
+        self.gen = torch.Generator().manual_seed(seed + 1)
+
+    def sample(self, task_idx: int) -> tuple[torch.Tensor, int]:
+        classes = self.task_classes[task_idx]
+        c = classes[int(torch.randint(len(classes), (1,), generator=self.gen))]
+        signal = 0.5 + 0.5 * float(torch.rand(1, generator=self.gen))
+        noise = torch.randn(self.feature_dim, generator=self.gen) * (1 - signal)
+        x = signal * self.prototypes[c] + noise
+        return x, c
+
+
 class CalibrationBanditTask:
     """Prototype-classification with variable ambiguity (Phase 1).
 

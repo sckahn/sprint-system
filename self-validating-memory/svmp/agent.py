@@ -54,10 +54,16 @@ class StepLog:
 
 class SelfValidatingAgent:
     def __init__(self, cfg: SVMPConfig, input_dim: int,
-                 reward_mode: str = "independent", learn: bool = True):
+                 reward_mode: str = "independent", learn: bool = True,
+                 use_vault: bool = True, force_gate: float | None = None):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
+        # Ablation knobs for the catastrophic-forgetting study:
+        #   use_vault=False  → no external memory (decision head only)
+        #   force_gate=1.0   → always consolidate (no gated protection)
+        self.use_vault = use_vault
+        self.force_gate = force_gate
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
         self.budget = BudgetEconomy(cfg.budget)
@@ -98,20 +104,23 @@ class SelfValidatingAgent:
         self.budget.tick()
         self.budget.spend("inference")
 
-        # 1) Encode + read the vault.
+        # 1) Encode + read the vault (skipped when the vault is ablated).
         with torch.no_grad():
             enc = self.model.encoder(x.flatten())
-        qr = self.vault.query(enc, top_k=4)
-        gap_signal = 1.0 if qr.gap else 0.0
+        if self.use_vault:
+            qr = self.vault.query(enc, top_k=4)
+            retrieved, gap, gap_signal = qr.value, qr.gap, (1.0 if qr.gap else 0.0)
+        else:
+            retrieved, gap, gap_signal = torch.zeros(cfg.dim), False, 0.0
 
         # 2) Adversarial verification loop (charges search budget if used).
-        loop_res = self.loop.run(enc, qr.value, qr.gap,
+        loop_res = self.loop.run(enc, retrieved, gap,
                                  on_search=lambda: self.budget.spend("search"))
 
         # 3) Decision through the model. Budget pressure shrinks top-k (Phase 2).
         frac = self.budget.balance / cfg.budget.total
         top_k = cfg.moe.top_k if frac > 0.3 else 1
-        out = self.model(x, qr.value, top_k=top_k)
+        out = self.model(x, retrieved, top_k=top_k)
         self.budget.spend_experts(out.moe.experts_used)
 
         # 4) Sample an action from the policy (REINFORCE-as-three-factor).
@@ -136,7 +145,8 @@ class SelfValidatingAgent:
         surprise = 1.0 - float(pi[action])
         if self.learn:
             factors = self.learner.update(reward, surprise, gap_signal,
-                                          loop_res.source_quality)
+                                          loop_res.source_quality,
+                                          gate_override=self.force_gate)
         else:
             # No plasticity: still compute the gate (for the vault) but don't
             # write the decision head. This is the "passive" control.
@@ -145,19 +155,22 @@ class SelfValidatingAgent:
                        "neuromod": 0.0}
 
         # 6b) Gated consolidation into the vault (verified knowledge only).
-        vault_action = self.vault.consolidate(
-            enc, enc, gate=self.learner.gate.last,
-            target=1.0 if correct else 0.0)
-        self.vault.decay()
+        if self.use_vault:
+            vault_action = self.vault.consolidate(
+                enc, enc, gate=self.learner.gate.last,
+                target=1.0 if correct else 0.0)
+            self.vault.decay()
+        else:
+            vault_action = "skipped"
 
         # 7) Backprop pathway: representation + auxiliary heads.
         if self.learn:
-            self._backprop_step(x, qr.value, target, correct, loop_res)
+            self._backprop_step(x, retrieved, target, correct, loop_res)
 
         self.ece.update(conf_val, correct)
         return StepLog(
             action=action, correct=correct, confidence=conf_val,
-            reward=reward, gap=qr.gap, verified=loop_res.verified,
+            reward=reward, gap=gap, verified=loop_res.verified,
             source_quality=loop_res.source_quality, gate=factors["gate"],
             neuromod=factors["neuromod"], experts_used=out.moe.experts_used,
             vault_size=len(self.vault), budget=round(self.budget.balance, 2),

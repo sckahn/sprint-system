@@ -49,10 +49,20 @@ class ThreeFactorLearner:
         self.elig.accumulate(pre, post_signal)
 
     def update(self, external_reward: float, surprise: float, gap: float,
-               source_quality: float) -> dict[str, float]:
-        """Fire the three-factor update and return the factor values."""
+               source_quality: float,
+               gate_override: float | None = None) -> dict[str, float]:
+        """Fire the three-factor update and return the factor values.
+
+        ``gate_override`` forces the gate value (e.g. 1.0 to ablate gating);
+        ``self.gate.last`` is set to the value used so downstream consumers
+        (the vault) see the same gate.
+        """
         m = self.neuromod(external_reward)
-        g = self.gate(surprise, gap, source_quality)
+        if gate_override is None:
+            g = self.gate(surprise, gap, source_quality)
+        else:
+            g = gate_override
+            self.gate.last = g
         dw = self.cfg.lr * m * g * self.elig.trace
         with torch.no_grad():
             self.layer.weight += dw
