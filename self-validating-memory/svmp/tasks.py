@@ -43,6 +43,42 @@ class SplitContinualTask:
         return x, c
 
 
+class PermutedLabelTask:
+    """Domain-incremental continual learning with CONFLICTING labels.
+
+    The adversarial counterpart to :class:`SplitContinualTask`. Every task draws
+    from the *same* input regions (shared prototypes), but each task applies a
+    different label permutation, so input region ``r`` is class ``perm[t][r]`` in
+    task ``t`` — the *same input* has *different* correct answers across tasks.
+
+    This is the breaking case for the Phase-6 forgetting fix (``LabelVault``): a
+    context-free input→label memory cannot be right for two tasks at once, and the
+    shared, re-mapped regions force the encoder to drift (the two assumptions the
+    fix relies on). Used by ``examples/experiment_forgetting_limits.py``.
+    """
+
+    def __init__(self, n_classes: int = 8, n_tasks: int = 2,
+                 feature_dim: int = 16, seed: int = 0):
+        self.n_classes = n_classes
+        self.n_tasks = n_tasks
+        self.feature_dim = feature_dim
+        g = torch.Generator().manual_seed(seed)
+        self.prototypes = torch.randn(n_classes, feature_dim, generator=g)
+        # Task 0 is the identity map; later tasks permute the labels of the same
+        # regions, so a region's correct answer conflicts across tasks.
+        self.perms = [list(range(n_classes))]
+        for _ in range(1, n_tasks):
+            self.perms.append(torch.randperm(n_classes, generator=g).tolist())
+        self.gen = torch.Generator().manual_seed(seed + 1)
+
+    def sample(self, task_idx: int) -> tuple[torch.Tensor, int]:
+        region = int(torch.randint(self.n_classes, (1,), generator=self.gen))
+        signal = 0.5 + 0.5 * float(torch.rand(1, generator=self.gen))
+        noise = torch.randn(self.feature_dim, generator=self.gen) * (1 - signal)
+        x = signal * self.prototypes[region] + noise
+        return x, self.perms[task_idx][region]
+
+
 class CalibrationBanditTask:
     """Prototype-classification with variable ambiguity (Phase 1).
 

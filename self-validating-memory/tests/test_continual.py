@@ -10,7 +10,7 @@ import torch
 
 from svmp.config import SVMPConfig
 from svmp.agent import SelfValidatingAgent
-from svmp.tasks import SplitContinualTask
+from svmp.tasks import SplitContinualTask, PermutedLabelTask
 from svmp.continual import (
     run_continual, forgetting, final_accuracy, eval_accuracy,
 )
@@ -35,6 +35,27 @@ def test_split_task_sample_shape():
     x, y = task.sample(0)
     assert x.shape == (12,)
     assert isinstance(y, int)
+
+
+def test_permuted_task_first_map_is_identity():
+    task = PermutedLabelTask(n_classes=8, n_tasks=2, feature_dim=16, seed=0)
+    assert task.perms[0] == list(range(8))
+
+
+def test_permuted_task_labels_conflict_across_tasks():
+    # Every task shares the same input regions but permutes their labels, so at
+    # least one region must have a different correct answer between tasks.
+    task = PermutedLabelTask(n_classes=8, n_tasks=2, feature_dim=16, seed=0)
+    assert task.perms[0] != task.perms[1]
+    assert any(a != b for a, b in zip(task.perms[0], task.perms[1]))
+
+
+def test_permuted_task_emits_all_labels_each_task():
+    task = PermutedLabelTask(n_classes=8, n_tasks=2, feature_dim=16, seed=0)
+    for t in range(2):
+        labels = {task.sample(t)[1] for _ in range(400)}
+        assert labels <= set(range(8))
+    assert task.prototypes.shape == (8, 16)
 
 
 def test_use_vault_false_keeps_vault_empty():
