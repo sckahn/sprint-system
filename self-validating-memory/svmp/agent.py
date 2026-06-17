@@ -31,6 +31,7 @@ from .config import SVMPConfig
 from .learning import RewardTopology, ThreeFactorLearner
 from .model import SelfValidatingModel
 from .roles import AdversarialLoop, Architect, Collector, Verifier
+from .label_vault import LabelVault
 from .vault import GrowingVault
 
 
@@ -55,17 +56,23 @@ class StepLog:
 class SelfValidatingAgent:
     def __init__(self, cfg: SVMPConfig, input_dim: int,
                  reward_mode: str = "independent", learn: bool = True,
-                 use_vault: bool = True, force_gate: float | None = None):
+                 use_vault: bool = True, force_gate: float | None = None,
+                 direct_vote: bool = False, vote_scale: float = 6.0):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
         # Ablation knobs for the catastrophic-forgetting study:
         #   use_vault=False  → no external memory (decision head only)
         #   force_gate=1.0   → always consolidate (no gated protection)
+        #   direct_vote=True → verified facts vote straight into the logits
+        #                      (the design-consistent forgetting fix; see label_vault)
         self.use_vault = use_vault
         self.force_gate = force_gate
+        self.direct_vote = direct_vote
+        self.vote_scale = vote_scale
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
+        self.label_vault = LabelVault(cfg.dim, cfg.n_classes) if direct_vote else None
         self.budget = BudgetEconomy(cfg.budget)
         self.reward_topology = RewardTopology(reward_mode)
         self.ece = ECEMeter()
@@ -124,7 +131,11 @@ class SelfValidatingAgent:
         self.budget.spend_experts(out.moe.experts_used)
 
         # 4) Sample an action from the policy (REINFORCE-as-three-factor).
-        pi = torch.softmax(out.logits.detach(), dim=0)
+        #    Verified facts vote directly onto the logits (forgetting fix).
+        logits = out.logits.detach()
+        if self.direct_vote:
+            logits = logits + self.vote_scale * self.label_vault.vote(enc)
+        pi = torch.softmax(logits, dim=0)
         action = int(torch.multinomial(pi, 1, generator=self.gen))
         correct = action == target
         conf_val = float(out.confidence.detach())
@@ -155,6 +166,9 @@ class SelfValidatingAgent:
                        "neuromod": 0.0}
 
         # 6b) Gated consolidation into the vault (verified knowledge only).
+        #     Verified-correct facts also enter the decay-free label vault.
+        if self.direct_vote and correct:
+            self.label_vault.write(enc, action, gate=self.learner.gate.last)
         if self.use_vault:
             vault_action = self.vault.consolidate(
                 enc, enc, gate=self.learner.gate.last,
@@ -176,6 +190,18 @@ class SelfValidatingAgent:
             vault_size=len(self.vault), budget=round(self.budget.balance, 2),
             alive=self.budget.alive, vault_action=vault_action,
         )
+
+    # ---------------------------------------------------------------------
+    @torch.no_grad()
+    def predict(self, x: torch.Tensor) -> int:
+        """Greedy inference along the same path as :meth:`step` (vault + vote)."""
+        enc = self.model.encoder(x.flatten())
+        retrieved = (self.vault.query(enc).value if self.use_vault
+                     else torch.zeros(self.cfg.dim))
+        logits = self.model(x, retrieved).logits
+        if self.direct_vote:
+            logits = logits + self.vote_scale * self.label_vault.vote(enc)
+        return int(logits.argmax())
 
     # ---------------------------------------------------------------------
     def _backprop_step(self, x: torch.Tensor, retrieved: torch.Tensor,

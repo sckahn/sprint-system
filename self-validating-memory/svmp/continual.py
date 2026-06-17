@@ -11,19 +11,13 @@ share exactly the same measurement code.
 """
 from __future__ import annotations
 
-import torch
-
 from .agent import SelfValidatingAgent
 from .tasks import SplitContinualTask
 
 
-@torch.no_grad()
-def infer(agent: SelfValidatingAgent, x: torch.Tensor) -> int:
-    """Inference that mirrors :meth:`SelfValidatingAgent.step` (vault read + model)."""
-    enc = agent.model.encoder(x.flatten())
-    retrieved = (agent.vault.query(enc).value if agent.use_vault
-                 else torch.zeros(agent.cfg.dim))
-    return int(agent.model(x, retrieved).logits.argmax())
+def infer(agent: SelfValidatingAgent, x) -> int:
+    """Inference along the agent's own decision path (vault read + model + vote)."""
+    return agent.predict(x)
 
 
 def eval_accuracy(agent: SelfValidatingAgent, task: SplitContinualTask,
