@@ -57,7 +57,8 @@ class SelfValidatingAgent:
     def __init__(self, cfg: SVMPConfig, input_dim: int,
                  reward_mode: str = "independent", learn: bool = True,
                  use_vault: bool = True, force_gate: float | None = None,
-                 direct_vote: bool = False, vote_scale: float = 6.0):
+                 direct_vote: bool = False, vote_scale: float = 6.0,
+                 ctx_dim: int = 0):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
@@ -72,7 +73,8 @@ class SelfValidatingAgent:
         self.vote_scale = vote_scale
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
-        self.label_vault = LabelVault(cfg.dim, cfg.n_classes) if direct_vote else None
+        self.label_vault = (LabelVault(cfg.dim, cfg.n_classes, ctx_dim=ctx_dim)
+                            if direct_vote else None)
         self.budget = BudgetEconomy(cfg.budget)
         self.reward_topology = RewardTopology(reward_mode)
         self.ece = ECEMeter()
@@ -106,7 +108,8 @@ class SelfValidatingAgent:
 
     # ---------------------------------------------------------------------
     def step(self, x: torch.Tensor, target: int,
-             order_target: list[int] | None = None) -> StepLog:
+             order_target: list[int] | None = None,
+             context: torch.Tensor | None = None) -> StepLog:
         cfg = self.cfg
         self.budget.tick()
         self.budget.spend("inference")
@@ -134,7 +137,7 @@ class SelfValidatingAgent:
         #    Verified facts vote directly onto the logits (forgetting fix).
         logits = out.logits.detach()
         if self.direct_vote:
-            logits = logits + self.vote_scale * self.label_vault.vote(enc)
+            logits = logits + self.vote_scale * self.label_vault.vote(enc, context)
         pi = torch.softmax(logits, dim=0)
         action = int(torch.multinomial(pi, 1, generator=self.gen))
         correct = action == target
@@ -168,7 +171,8 @@ class SelfValidatingAgent:
         # 6b) Gated consolidation into the vault (verified knowledge only).
         #     Verified-correct facts also enter the decay-free label vault.
         if self.direct_vote and correct:
-            self.label_vault.write(enc, action, gate=self.learner.gate.last)
+            self.label_vault.write(enc, action, gate=self.learner.gate.last,
+                                   context=context)
         if self.use_vault:
             vault_action = self.vault.consolidate(
                 enc, enc, gate=self.learner.gate.last,
@@ -193,14 +197,14 @@ class SelfValidatingAgent:
 
     # ---------------------------------------------------------------------
     @torch.no_grad()
-    def predict(self, x: torch.Tensor) -> int:
+    def predict(self, x: torch.Tensor, context: torch.Tensor | None = None) -> int:
         """Greedy inference along the same path as :meth:`step` (vault + vote)."""
         enc = self.model.encoder(x.flatten())
         retrieved = (self.vault.query(enc).value if self.use_vault
                      else torch.zeros(self.cfg.dim))
         logits = self.model(x, retrieved).logits
         if self.direct_vote:
-            logits = logits + self.vote_scale * self.label_vault.vote(enc)
+            logits = logits + self.vote_scale * self.label_vault.vote(enc, context)
         return int(logits.argmax())
 
     # ---------------------------------------------------------------------

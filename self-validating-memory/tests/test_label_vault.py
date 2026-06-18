@@ -4,6 +4,7 @@ import torch
 from svmp.config import SVMPConfig
 from svmp.agent import SelfValidatingAgent
 from svmp.label_vault import LabelVault
+from svmp.context import ContextInferrer
 from svmp.tasks import SplitContinualTask
 
 
@@ -72,3 +73,61 @@ def test_agent_without_direct_vote_has_no_label_vault():
     cfg = SVMPConfig(seed=0, n_classes=8)
     agent = SelfValidatingAgent(cfg, 16)
     assert agent.label_vault is None
+
+
+# --- context keys: conflicting mappings disambiguated by context ----------
+def _ctx(i, n=2):
+    v = torch.zeros(n)
+    v[i] = 1.0
+    return v
+
+
+def test_context_key_separates_conflicting_labels():
+    # Same input region, two contexts, two different verified labels.
+    lv = LabelVault(dim=4, n_classes=5, sim_threshold=0.5, ctx_dim=2)
+    lv.write(_unit(1, 0, 0, 0), label=3, gate=1.0, context=_ctx(0))
+    lv.write(_unit(1, 0, 0, 0), label=4, gate=1.0, context=_ctx(1))
+    q = _unit(1, 0, 0.05, 0)
+    assert int(lv.vote(q, context=_ctx(0)).argmax()) == 3
+    assert int(lv.vote(q, context=_ctx(1)).argmax()) == 4
+
+
+def test_context_mismatch_suppresses_vote():
+    lv = LabelVault(dim=4, n_classes=5, sim_threshold=0.5, ctx_dim=2)
+    lv.write(_unit(1, 0, 0, 0), label=3, gate=1.0, context=_ctx(0))
+    # An orthogonal context shares no entries → no confident vote.
+    assert torch.count_nonzero(lv.vote(_unit(1, 0, 0, 0), context=_ctx(1))) == 0
+
+
+def test_no_context_path_is_backward_compatible():
+    lv = LabelVault(dim=4, n_classes=5, sim_threshold=0.5)  # ctx_dim=0
+    lv.write(_unit(1, 0, 0, 0), label=2, gate=1.0)
+    assert int(lv.vote(_unit(1, 0, 0, 0)).argmax()) == 2
+
+
+# --- task-free context inference from the reward stream -------------------
+def test_inferrer_holds_slot_when_rewards_stay_high():
+    inf = ContextInferrer(ctx_dim=4)
+    switched = any(inf.observe(1.0) for _ in range(500))
+    assert not switched
+    assert inf.slot == 0
+
+
+def test_inferrer_switches_on_reward_collapse():
+    inf = ContextInferrer(ctx_dim=4)
+    for _ in range(300):          # establish a high baseline on context 0
+        inf.observe(1.0)
+    switched = any(inf.observe(0.0) for _ in range(200))   # regime collapses
+    assert switched
+    assert inf.slot == 1
+    assert float(inf.context()[1]) == 1.0
+
+
+def test_inferrer_never_exceeds_slots():
+    inf = ContextInferrer(ctx_dim=2)
+    for _ in range(5):
+        for _ in range(200):
+            inf.observe(1.0)
+        for _ in range(200):
+            inf.observe(0.0)
+    assert inf.slot <= 1
