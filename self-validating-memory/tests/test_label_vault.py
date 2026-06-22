@@ -4,7 +4,7 @@ import torch
 from svmp.config import SVMPConfig
 from svmp.agent import SelfValidatingAgent
 from svmp.label_vault import LabelVault
-from svmp.context import ContextInferrer
+from svmp.context import ContextInferrer, RecognizingContextManager
 from svmp.tasks import SplitContinualTask
 
 
@@ -131,3 +131,44 @@ def test_inferrer_never_exceeds_slots():
         for _ in range(200):
             inf.observe(0.0)
     assert inf.slot <= 1
+
+
+# --- re-recognition of a returned context via reward probing --------------
+def _probe(mgr, reward, n):
+    for _ in range(n):
+        mgr.observe(reward)
+
+
+def test_recognise_probes_and_adopts_best_rewarded_slot():
+    mgr = RecognizingContextManager(ctx_dim=4, probe_steps=3, auto_detect=False)
+    mgr.force_search()                 # candidates: [slot0, fresh slot1]
+    _probe(mgr, 0.0, 3)                # slot0 probes poorly
+    _probe(mgr, 1.0, 3)                # fresh slot1 probes well → adopted
+    assert mgr.slot == 1
+    assert mgr.n_known == 2
+
+
+def test_recognise_reselects_returned_slot_without_allocating():
+    mgr = RecognizingContextManager(ctx_dim=4, probe_steps=3, auto_detect=False)
+    mgr.force_search(); _probe(mgr, 0.0, 3); _probe(mgr, 1.0, 3)   # learn slot1
+    mgr.force_search()                 # candidates: [slot0, slot1, fresh slot2]
+    _probe(mgr, 1.0, 3)                # slot0 now rewards best → re-selected
+    _probe(mgr, 0.0, 3)
+    _probe(mgr, 0.0, 3)
+    assert mgr.slot == 0
+    assert mgr.n_known == 2            # no new slot allocated on return
+
+
+def test_recognise_no_autodetect_holds_through_collapse():
+    mgr = RecognizingContextManager(ctx_dim=4, auto_detect=False)
+    _probe(mgr, 1.0, 200)
+    _probe(mgr, 0.0, 200)             # would trigger a detector, but auto_detect off
+    assert mgr.slot == 0
+    assert mgr.mode == "normal"
+
+
+def test_recognise_tracks_probe_cost():
+    mgr = RecognizingContextManager(ctx_dim=4, probe_steps=3, auto_detect=False)
+    mgr.force_search()
+    _probe(mgr, 0.0, 3); _probe(mgr, 1.0, 3)
+    assert mgr.probe_cost == 6
