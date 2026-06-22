@@ -150,13 +150,26 @@ def test_recognise_probes_and_adopts_best_rewarded_slot():
 
 def test_recognise_reselects_returned_slot_without_allocating():
     mgr = RecognizingContextManager(ctx_dim=4, probe_steps=3, auto_detect=False)
-    mgr.force_search(); _probe(mgr, 0.0, 3); _probe(mgr, 1.0, 3)   # learn slot1
-    mgr.force_search()                 # candidates: [slot0, slot1, fresh slot2]
-    _probe(mgr, 1.0, 3)                # slot0 now rewards best → re-selected
-    _probe(mgr, 0.0, 3)
-    _probe(mgr, 0.0, 3)
+    mgr.force_search(); _probe(mgr, 0.0, 3); _probe(mgr, 1.0, 3)   # learn slot1 (now current)
+    mgr.force_search()                 # candidates: [slot1(cur), slot0, fresh slot2]
+    _probe(mgr, 0.0, 3)                # current slot1 probes poorly (back on A)
+    _probe(mgr, 1.0, 3)                # slot0 rewards best → re-selected
+    _probe(mgr, 0.0, 3)                # fresh slot2 poor
     assert mgr.slot == 0
     assert mgr.n_known == 2            # no new slot allocated on return
+
+
+def test_recognise_early_accepts_current_on_false_alarm():
+    # A spurious search when the current slot is still good costs ONE probe window.
+    mgr = RecognizingContextManager(ctx_dim=4, probe_steps=3, auto_detect=False,
+                                    accept=0.6)
+    mgr.force_search(); _probe(mgr, 0.0, 3); _probe(mgr, 1.0, 3)   # settle on slot1
+    base = mgr.probe_cost
+    mgr.force_search()                 # false alarm; slot1 is still correct
+    _probe(mgr, 1.0, 3)                # current probes high → early-accept, stop
+    assert mgr.slot == 1
+    assert mgr.mode == "normal"
+    assert mgr.probe_cost - base == 3  # only one window, not the whole candidate set
 
 
 def test_recognise_no_autodetect_holds_through_collapse():

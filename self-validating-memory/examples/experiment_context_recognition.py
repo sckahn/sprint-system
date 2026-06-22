@@ -21,7 +21,12 @@ adopts the best-rewarded one.
 Eval is prequential (predict→observe, no weight learning). We compare per segment:
   * oracle    — the true task id each segment (upper bound).
   * forward    — allocate a fresh slot at every boundary (revisits hit empty slots).
-  * recognise  — RecognizingContextManager (reward-probing re-selection).
+  * recognise  — boundary given, reward-probing re-selection (recognition ceiling).
+  * auto       — fully task-free: NO boundary either; the manager's own reward-
+                 collapse detector drives the probing search. Tests whether probing
+                 *absorbs* the detector's noise (false alarms → cheap re-probes of
+                 the current slot, not forgetting) rather than relying on a clean
+                 boundary signal.
 
     PYTHONPATH=. python examples/experiment_context_recognition.py
 """
@@ -91,6 +96,19 @@ class _Recognise:
     def cost(self): return self.mgr.probe_cost
 
 
+class _Auto:
+    """Fully task-free: no boundary signal — the reward-collapse detector inside
+    the manager triggers the probing search itself."""
+    def __init__(self):
+        self.mgr = RecognizingContextManager(ctx_dim=CTX_DIM, probe_steps=30,
+                                             auto_detect=True, accept=0.6)
+    def boundary(self, t): pass                      # no boundary is given
+    def context(self): return self.mgr.context()
+    def observe(self, r): self.mgr.observe(r)
+    @property
+    def cost(self): return self.mgr.probe_cost
+
+
 def prequential_revisit(agent, task, provider):
     """Stream A→B→A→B; predict→observe, no learning. Returns per-segment accuracy."""
     seg_acc = []
@@ -113,7 +131,7 @@ def run(mode, seed):
     task = PermutedLabelTask(8, 2, 16, seed=seed)
     train_with_oracle_tags(agent, task)
     provider = {"oracle": _Oracle, "forward": _Forward,
-                "recognise": _Recognise}[mode]()
+                "recognise": _Recognise, "auto": _Auto}[mode]()
     seg = prequential_revisit(agent, task, provider)
     return seg, provider.cost
 
@@ -123,29 +141,33 @@ def main():
           "prequential)\n")
     print(f"  {'mode':10s} |   A1    B1    A2*   B2*  | revisit mean | probe")
     agg = {}
-    for mode in ("oracle", "forward", "recognise"):
+    for mode in ("oracle", "forward", "recognise", "auto"):
         segs, costs = zip(*[run(mode, s) for s in SEEDS])
         m = [st.mean(s[i] for s in segs) for i in range(4)]
         revisit = st.mean([m[2], m[3]])          # the returned segments
         cost = st.mean(costs)
-        agg[mode] = (m, revisit)
-        print(f"  {mode:10s} | {m[0]:.3f} {m[1]:.3f} {m[2]:.3f} {m[3]:.3f} "
+        agg[mode] = (revisit, cost)
+        label = mode + (" (no bndry)" if mode == "auto" else "")
+        print(f"  {label:10s} | {m[0]:.3f} {m[1]:.3f} {m[2]:.3f} {m[3]:.3f} "
               f"|    {revisit:.3f}     | {cost:.0f}")
 
-    o, f, r = agg["oracle"][1], agg["forward"][1], agg["recognise"][1]
+    o = agg["oracle"][0]; f = agg["forward"][0]
+    r = agg["recognise"][0]; a = agg["auto"][0]
     print("\nReading (A2*/B2* are the RETURNED segments — the forgetting test):")
-    print(f"  Forward inference forgets on return ({f:.2f} revisit mean): every "
-          f"change-point spawns a\n  fresh empty slot, so the revisited task falls "
-          f"back to the drifted model.")
-    print(f"  Reward-probing re-recognition restores it to {r:.2f}, vs the oracle's "
-          f"{o:.2f} — recovering\n  {(r - f) / (o - f) * 100:.0f}% of the gap, at the "
-          f"cost of a short probe at each switch.")
-    print("  This closes the part-4 limitation: with reward feedback the agent "
-          "re-selects an")
-    print("  earlier task's context instead of re-forgetting it. The residual gap "
-          "is the probe")
-    print("  transient (wrong context until the search locks on). Still no task id "
-          "is used.")
+    print(f"  Forward forgets on return ({f:.2f}): every boundary spawns a fresh "
+          f"empty slot, so the\n  revisited task falls back to the drifted model.")
+    print(f"  Given the boundary, reward-probing re-recognition restores it to "
+          f"{r:.2f} (recovering\n  {(r - f) / (o - f) * 100:.0f}% of the gap to the "
+          f"oracle {o:.2f}) — no task id, just reward.")
+    print(f"  Fully task-free (NO boundary either), the manager's own collapse "
+          f"detector drives the\n  probing and still reaches {a:.2f} — well above "
+          f"forward's {f:.2f}. Probing ABSORBS the")
+    print(f"  detector's false alarms: a spurious trigger early-accepts the current "
+          f"slot after one\n  window (cheap re-probe), so noise costs probe steps, "
+          f"not forgetting. The residual gap")
+    print(f"  to the {r:.2f} recognition ceiling is detection cost — latency to fire "
+          f"plus leftover\n  false-alarm probing. Recognition adds the most; "
+          f"detection is now the bottleneck.")
 
 
 if __name__ == "__main__":

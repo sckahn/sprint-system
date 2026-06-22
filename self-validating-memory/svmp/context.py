@@ -83,7 +83,8 @@ class RecognizingContextManager:
 
     def __init__(self, ctx_dim: int = 6, probe_steps: int = 25, fast: float = 0.2,
                  slow: float = 0.02, drop: float = 0.3, warmup: int = 80,
-                 established: float = 0.55, auto_detect: bool = True):
+                 established: float = 0.55, auto_detect: bool = True,
+                 accept: float = 0.6):
         self.ctx_dim = ctx_dim
         self.probe_steps = probe_steps
         self.afast = fast
@@ -92,7 +93,9 @@ class RecognizingContextManager:
         self.warmup = warmup
         self.established = established
         self.auto_detect = auto_detect          # False ⇒ search only on force_search()
-        self.reset()
+        self.accept = accept                    # early-accept the current slot if it
+        self.reset()                            # still rewards this well (cheap on
+        #                                         a false alarm)
 
     def reset(self) -> None:
         self.slot = 0
@@ -133,7 +136,10 @@ class RecognizingContextManager:
 
     def _start_search(self) -> None:
         self.mode = "search"
-        cands = list(range(self.n_known))
+        # Probe the CURRENT slot first so a false alarm (current still best) can be
+        # accepted after one window; then the other known slots, then a fresh one.
+        cur = self.slot
+        cands = [cur] + [c for c in range(self.n_known) if c != cur]
         if self.n_known < self.ctx_dim:
             cands.append(self.n_known)        # one fresh slot
         self._cands = cands
@@ -155,16 +161,26 @@ class RecognizingContextManager:
         self._pcount += 1
         if self._pcount < self.probe_steps:
             return
-        self._scores[self._cands[self._ci]] = self._psum / self._pcount
+        cand = self._cands[self._ci]
+        score = self._psum / self._pcount
+        self._scores[cand] = score
+        # Early-accept: if the current slot (probed first) still rewards well, the
+        # alarm was spurious — keep it and stop, so noise costs just one window.
+        if self._ci == 0 and score >= self.accept:
+            self._finalize()
+            return
         self._ci += 1
         if self._ci < len(self._cands):
             self.slot = self._cands[self._ci]
             self._pcount = 0
             self._psum = 0.0
-        else:                                  # finished probing → adopt the best
-            best = max(self._scores, key=self._scores.get)
-            self.slot = best
-            if best == self.n_known:
-                self.n_known += 1
-            self.mode = "normal"
-            self._reset_ema()
+        else:
+            self._finalize()
+
+    def _finalize(self) -> None:
+        best = max(self._scores, key=self._scores.get)
+        self.slot = best
+        if best == self.n_known:
+            self.n_known += 1
+        self.mode = "normal"
+        self._reset_ema()
