@@ -42,18 +42,26 @@ class AdversarialLoop:
         self.verifier = verifier
 
     def run(self, x: torch.Tensor, retrieved: torch.Tensor, gap: bool,
-            on_search=None) -> LoopResult:
+            on_search=None, uncertainty: float | None = None) -> LoopResult:
         """Run one architect→collector(→verifier) cycle.
 
         ``on_search`` is an optional callback (e.g. to charge the budget) invoked
         only when the Verifier is actually used.
+
+        ``uncertainty`` is an optional calibrated uncertainty score (opt-in). When
+        supplied, verification is *also* triggered when it meets the configured
+        ``cfg.verify_uncertainty_tau`` — so the costly search can fire on
+        calibrated unsureness, not just a binary vault-miss. Default ``None`` (and
+        the default tau=1.0) keep the original gap/low-support trigger intact.
         """
         hypo = self.architect(x, retrieved)
         with torch.no_grad():
             support = float(self.collector(hypo, retrieved))
 
+        uncertain = (uncertainty is not None
+                     and uncertainty >= self.cfg.verify_uncertainty_tau)
         verified, src_q, evidence = False, 0.0, None
-        if gap or support < self.cfg.collector_agree_threshold:
+        if gap or support < self.cfg.collector_agree_threshold or uncertain:
             if on_search is not None:
                 on_search()
             evidence = self.verifier.verify(x)

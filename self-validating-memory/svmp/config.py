@@ -98,6 +98,17 @@ class RoleConfig:
     source_quality_std: float = 0.25
     triangulation_k: int = 3           # independent sources cross-checked
 
+    # Calibration-gated verification trigger (opt-in, default OFF).
+    # The Verifier search is the costliest budget op, yet it normally fires only
+    # on a *binary* vault-miss (gap) or low collector support. This threshold
+    # additionally fires it when a calibrated uncertainty score u ≥ tau, tying the
+    # spend to how unsure the model actually is rather than a hard gap flag.
+    # Reference: calibrated selective scores entropy/margin/Gini
+    # (https://arxiv.org/pdf/2401.12708) + split-conformal abstention
+    # (https://www.emergentmind.com/topics/conformal-abstention).
+    # tau=1.0 ⇒ entropy/conformal score in [0,1] can never reach it ⇒ no change.
+    verify_uncertainty_tau: float = 1.0   # ≥이 값이면 검증; 기본 1.0 ⇒ 무변화
+
 
 @dataclass
 class SVMPConfig:

@@ -26,7 +26,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .budget import BudgetEconomy
-from .calibration import ECEMeter, jeopardy_reward
+from .calibration import ConformalThreshold, ECEMeter, entropy_score, jeopardy_reward
 from .config import SVMPConfig
 from .learning import RewardTopology, ThreeFactorLearner
 from .model import SelfValidatingModel
@@ -58,7 +58,7 @@ class SelfValidatingAgent:
                  reward_mode: str = "independent", learn: bool = True,
                  use_vault: bool = True, force_gate: float | None = None,
                  direct_vote: bool = False, vote_scale: float = 6.0,
-                 ctx_dim: int = 0):
+                 ctx_dim: int = 0, uncertainty_gate: bool = False):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
@@ -71,6 +71,13 @@ class SelfValidatingAgent:
         self.force_gate = force_gate
         self.direct_vote = direct_vote
         self.vote_scale = vote_scale
+        # Calibration-gated verification (opt-in; default OFF ⇒ behaviour
+        # unchanged). When on, a calibrated uncertainty score is passed into the
+        # adversarial loop, and the (conf, correct) stream feeds a split-conformal
+        # threshold for risk-coverage / abstention analysis. The actual trigger is
+        # governed by cfg.roles.verify_uncertainty_tau (1.0 ⇒ inert by default).
+        self.uncertainty_gate = uncertainty_gate
+        self.conformal = ConformalThreshold(alpha=0.1, window=500)
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
         self.label_vault = (LabelVault(cfg.dim, cfg.n_classes, ctx_dim=ctx_dim)
@@ -124,8 +131,17 @@ class SelfValidatingAgent:
             retrieved, gap, gap_signal = torch.zeros(cfg.dim), False, 0.0
 
         # 2) Adversarial verification loop (charges search budget if used).
+        #    When the uncertainty gate is on, score the model's current predictive
+        #    entropy (a calibrated selective score) and let it co-trigger the
+        #    Verifier search alongside the binary gap signal. Default OFF ⇒ the
+        #    uncertainty stays None and the trigger is exactly the original one.
+        unc: float | None = None
+        if self.uncertainty_gate:
+            with torch.no_grad():
+                unc = entropy_score(self.model(x, retrieved).logits)
         loop_res = self.loop.run(enc, retrieved, gap,
-                                 on_search=lambda: self.budget.spend("search"))
+                                 on_search=lambda: self.budget.spend("search"),
+                                 uncertainty=unc)
 
         # 3) Decision through the model. Budget pressure shrinks top-k (Phase 2).
         frac = self.budget.balance / cfg.budget.total
@@ -190,6 +206,11 @@ class SelfValidatingAgent:
             self._backprop_step(x, retrieved, target, correct, loop_res)
 
         self.ece.update(conf_val, correct)
+        # Feed the calibrated (confidence, correctness) stream into the conformal
+        # threshold so its empirical quantile / coverage can be inspected. Pure
+        # bookkeeping — it does not alter the step's behaviour.
+        if self.uncertainty_gate:
+            self.conformal.update(conf_val, correct)
         return StepLog(
             action=action, correct=correct, confidence=conf_val,
             reward=reward, gap=gap, verified=loop_res.verified,
