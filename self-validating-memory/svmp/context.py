@@ -200,6 +200,10 @@ class RecognizingContextManager:
         self.n_known = 1
         self.mode = "normal"
         self.probe_cost = 0
+        # True only on the step a search FINALIZED onto a freshly-allocated slot —
+        # i.e. a confirmed genuine new regime (not a re-recognised returning one).
+        # Consumed by the opt-in AMR path in the agent to trigger realignment.
+        self.new_regime = False
         self._reset_ema()
         self._cands: list[int] = []
         self._ci = 0
@@ -254,6 +258,7 @@ class RecognizingContextManager:
 
     def observe(self, reward01: float) -> None:
         """Feed the latest outcome; drives change detection and probing search."""
+        self.new_regime = False              # one-shot; set only by _finalize below
         if self.mode == "normal":
             if self.auto_detect and self._detect_collapse(reward01):
                 self._start_search()
@@ -285,5 +290,6 @@ class RecognizingContextManager:
         self.slot = best
         if best == self.n_known:
             self.n_known += 1
+            self.new_regime = True           # confirmed genuine new regime
         self.mode = "normal"
         self._reset_ema()

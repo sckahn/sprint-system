@@ -75,6 +75,44 @@ def test_agent_without_direct_vote_has_no_label_vault():
     assert agent.label_vault is None
 
 
+# --- Adaptive Memory Realignment (opt-in) ----------------------------------
+def test_realign_region_prunes_only_matching():
+    # Two distinct (orthogonal) regions; realigning one leaves the other intact.
+    lv = LabelVault(dim=4, n_classes=5, merge_threshold=0.9)
+    lv.write(_unit(1, 0, 0, 0), label=3, gate=1.0)
+    lv.write(_unit(0, 1, 0, 0), label=1, gate=1.0)
+    pruned = lv.realign_region(_unit(1, 0, 0.02, 0))   # near region A only
+    assert pruned == 1
+    assert len(lv) == 1
+    assert int(lv.labels[0]) == 1                      # region B survived
+    assert int(lv.vote(_unit(0, 1, 0, 0)).argmax()) == 1
+
+
+def test_realign_region_noop_on_empty_vault():
+    lv = LabelVault(dim=4, n_classes=5)
+    assert lv.realign_region(_unit(1, 0, 0, 0)) == 0
+    assert len(lv) == 0
+
+
+def test_realign_region_repopulates_new_label():
+    # Drift: the same region's correct label changes; prune the stale entry then
+    # write the new fact → the vote returns the NEW label.
+    lv = LabelVault(dim=4, n_classes=5, sim_threshold=0.5, merge_threshold=0.9)
+    lv.write(_unit(1, 0, 0, 0), label=3, gate=1.0)
+    assert int(lv.vote(_unit(1, 0, 0.05, 0)).argmax()) == 3
+    lv.realign_region(_unit(1, 0, 0, 0))
+    assert len(lv) == 0
+    lv.write(_unit(1, 0, 0, 0), label=4, gate=1.0)     # repopulate with new label
+    assert int(lv.vote(_unit(1, 0, 0.05, 0)).argmax()) == 4
+
+
+def test_amr_disabled_by_default():
+    cfg = SVMPConfig(seed=0, n_classes=8)
+    agent = SelfValidatingAgent(cfg, 16, direct_vote=True)
+    assert agent.amr is False
+    assert agent.amr_manager is None
+
+
 # --- context keys: conflicting mappings disambiguated by context ----------
 def _ctx(i, n=2):
     v = torch.zeros(n)

@@ -94,6 +94,41 @@ class LabelVault:
         return "add"
 
     @torch.no_grad()
+    def realign_region(self, region_key: torch.Tensor,
+                       sim_threshold: float | None = None) -> int:
+        """Selectively prune entries of a *drifted* input region (opt-in AMR).
+
+        Adaptive Memory Realignment (Ashrafee et al. 2025, "Holistic Continual
+        Learning under Concept Drift with Adaptive Memory Realignment",
+        https://arxiv.org/abs/2507.02310): under concept drift the *correct* label
+        of a region changes, so the never-forget vault now holds a stale fact that
+        out-votes the (correct) re-learned model. Rather than blanket-decay every
+        entry — which also erases unflipped regions the vault still protects — AMR
+        선택적으로(selectively) removes only the outdated entries of the drifted
+        region and lets subsequent verified writes repopulate it with the new
+        mapping.
+
+        Entries whose key is *similar* to ``region_key`` (cosine ≥ ``thr``) are the
+        drifted region and get dropped; everything below threshold is kept. Uses the
+        same masked-index reindex as :meth:`vault.GrowingVault.decay`. Returns the
+        number of pruned entries. With the default never-forget agent (``amr=False``)
+        this is never called, so semantics are unchanged.
+        """
+        if len(self) == 0:
+            return 0
+        thr = sim_threshold or self.merge_threshold
+        sims = self._cosine(region_key.detach().flatten())
+        keep = sims < thr
+        pruned = int((~keep).sum())
+        if pruned:
+            self.keys = self.keys[keep]
+            self.labels = self.labels[keep]
+            self.conviction = self.conviction[keep]
+            if self.ctx_dim > 0:
+                self.contexts = self.contexts[keep]
+        return pruned
+
+    @torch.no_grad()
     def vote(self, query: torch.Tensor, context=None) -> torch.Tensor:
         """Conviction-weighted class vote, gated by region *and* context match.
 

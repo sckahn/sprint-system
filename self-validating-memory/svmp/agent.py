@@ -31,6 +31,7 @@ from .config import SVMPConfig
 from .learning import RewardTopology, ThreeFactorLearner
 from .model import SelfValidatingModel
 from .roles import AdversarialLoop, Architect, Collector, Verifier
+from .context import RecognizingContextManager
 from .label_vault import LabelVault
 from .vault import GrowingVault
 
@@ -58,7 +59,8 @@ class SelfValidatingAgent:
                  reward_mode: str = "independent", learn: bool = True,
                  use_vault: bool = True, force_gate: float | None = None,
                  direct_vote: bool = False, vote_scale: float = 6.0,
-                 ctx_dim: int = 0, uncertainty_gate: bool = False):
+                 ctx_dim: int = 0, uncertainty_gate: bool = False,
+                 amr: bool = False):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
@@ -77,6 +79,16 @@ class SelfValidatingAgent:
         # threshold for risk-coverage / abstention analysis. The actual trigger is
         # governed by cfg.roles.verify_uncertainty_tau (1.0 ⇒ inert by default).
         self.uncertainty_gate = uncertainty_gate
+        # Adaptive Memory Realignment (opt-in; default OFF ⇒ never-forget semantics
+        # unchanged). When on, the agent watches its own reward stream with a task-
+        # free change detector; on a CONFIRMED genuine new regime (the manager
+        # finalised onto a fresh slot) it selectively prunes the drifted region of
+        # the decay-free label vault so later verified writes repopulate the new
+        # mapping. See LabelVault.realign_region (Ashrafee et al. 2025,
+        # https://arxiv.org/abs/2507.02310).
+        self.amr = amr
+        self.amr_manager = (RecognizingContextManager(auto_detect=True)
+                            if amr else None)
         self.conformal = ConformalThreshold(alpha=0.1, window=500)
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
@@ -190,6 +202,15 @@ class SelfValidatingAgent:
 
         # 6b) Gated consolidation into the vault (verified knowledge only).
         #     Verified-correct facts also enter the decay-free label vault.
+        # Adaptive Memory Realignment (opt-in): feed the outcome to the task-free
+        # detector; only on a CONFIRMED true drift (it finalised onto a fresh slot)
+        # do we realign — selectively prune this region's stale entries BEFORE the
+        # write so later verified-correct facts repopulate the new mapping. Default
+        # off ⇒ this whole block is skipped and never-forget semantics hold.
+        if self.amr and self.direct_vote:
+            self.amr_manager.observe(1.0 if correct else 0.0)
+            if self.amr_manager.new_regime:
+                self.label_vault.realign_region(enc)
         if self.direct_vote and correct:
             self.label_vault.write(enc, action, gate=self.learner.gate.last,
                                    context=context)

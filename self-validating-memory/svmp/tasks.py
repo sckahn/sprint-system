@@ -79,6 +79,70 @@ class PermutedLabelTask:
         return x, self.perms[task_idx][region]
 
 
+class ConceptDriftTask:
+    """Holistic continual learning under *concept drift* (for the AMR study).
+
+    Like :class:`PermutedLabelTask` every sample is drawn from one of a fixed set
+    of input regions (shared prototypes), but here a subset of regions is
+    PERMANENTLY remapped to new classes at a single known ``flip_step`` — a genuine
+    new regime, not a reversible A→B→A. Before the flip region ``r`` is class
+    ``base[r]``; after it the drifted regions take ``flipped[r]`` and never revert,
+    so there is no recurring context to tag (distinct from ``PermutedLabelTask``).
+
+    This is the setting Adaptive Memory Realignment targets (Ashrafee et al. 2025,
+    https://arxiv.org/abs/2507.02310): a never-forget memory keeps voting the stale
+    pre-drift label for the flipped regions, so the agent stays stuck unless those
+    outdated entries are selectively realigned. ``drift_regions`` (default: the
+    first half of the regions) flip; the rest keep their original mapping and serve
+    as the unflipped-retention control.
+    """
+
+    def __init__(self, n_classes: int = 8, feature_dim: int = 16,
+                 flip_step: int = 1500, drift_frac: float = 0.5, seed: int = 0):
+        self.n_classes = n_classes
+        self.feature_dim = feature_dim
+        self.flip_step = flip_step
+        g = torch.Generator().manual_seed(seed)
+        self.prototypes = torch.randn(n_classes, feature_dim, generator=g)
+        # Base mapping is the identity; the drift remaps a subset of regions by a
+        # fixed derangement-ish permutation so the flipped answer truly differs.
+        self.base = list(range(n_classes))
+        shift = list(range(1, n_classes)) + [0]          # r -> (r+1) mod n
+        n_drift = max(1, int(n_classes * drift_frac))
+        self.drift_regions = list(range(n_drift))
+        self.flipped = list(self.base)
+        for r in self.drift_regions:
+            self.flipped[r] = shift[r]
+        self.unflipped_regions = [r for r in range(n_classes)
+                                  if r not in self.drift_regions]
+        self.gen = torch.Generator().manual_seed(seed + 1)
+        self._step = 0
+
+    def _label(self, region: int) -> int:
+        mapping = self.flipped if self._step >= self.flip_step else self.base
+        return mapping[region]
+
+    def sample(self) -> tuple[torch.Tensor, int]:
+        region = int(torch.randint(self.n_classes, (1,), generator=self.gen))
+        signal = 0.5 + 0.5 * float(torch.rand(1, generator=self.gen))
+        noise = torch.randn(self.feature_dim, generator=self.gen) * (1 - signal)
+        x = signal * self.prototypes[region] + noise
+        y = self._label(region)
+        self._step += 1
+        return x, y
+
+    def sample_region(self, region: int) -> tuple[torch.Tensor, int]:
+        """Draw an input from a *specific* region at the current drift phase.
+
+        Used by the AMR experiment to measure per-region recovery/retention without
+        advancing the drift clock (``_step`` is left untouched).
+        """
+        signal = 0.5 + 0.5 * float(torch.rand(1, generator=self.gen))
+        noise = torch.randn(self.feature_dim, generator=self.gen) * (1 - signal)
+        x = signal * self.prototypes[region] + noise
+        return x, self._label(region)
+
+
 class CalibrationBanditTask:
     """Prototype-classification with variable ambiguity (Phase 1).
 
