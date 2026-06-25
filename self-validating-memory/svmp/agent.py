@@ -132,6 +132,10 @@ class SelfValidatingAgent:
         top_k = cfg.moe.top_k if frac > 0.3 else 1
         out = self.model(x, retrieved, top_k=top_k)
         self.budget.spend_experts(out.moe.experts_used)
+        # Auxiliary-loss-free balancing: nudge the gradient-free routing bias toward
+        # an even load (opt-in; default OFF ⇒ this is skipped, behaviour unchanged).
+        if cfg.moe.loss_free_balance:
+            self.model.moe.update_bias(out.moe.last_top_idx)
 
         # 4) Sample an action from the policy (REINFORCE-as-three-factor).
         #    Verified facts vote directly onto the logits (forgetting fix).

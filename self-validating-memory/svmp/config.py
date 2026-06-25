@@ -49,6 +49,18 @@ class MoEConfig:
     top_k: int = 2
     load_balance_coef: float = 1e-2    # anti-collapse auxiliary loss
 
+    # Auxiliary-loss-free load balancing (opt-in, default OFF).
+    # A per-expert bias is added to the top-k SELECTION scores only — never to the
+    # output gate weights — so routing is steered toward under-used experts without
+    # injecting any gradient into the objective. After each routing decision the
+    # bias is nudged gradient-free: b_i += u·sign(mean_load − load_i), so overloaded
+    # experts get a lower (more negative) bias and starved experts get a higher one.
+    # Reference: Wang et al., "Auxiliary-Loss-Free Load Balancing Strategy for
+    # Mixture-of-Experts" (DeepSeek, https://arxiv.org/html/2408.15664v1).
+    # Defaults reproduce the plain softmax routing bitwise (loss_free_balance=False).
+    loss_free_balance: bool = False    # 켜면 gradient-free routing bias 활성화
+    bias_update_u: float = 1e-3        # bias 업데이트 속도 u (b += u·sign(err))
+
 
 @dataclass
 class LearningConfig:
