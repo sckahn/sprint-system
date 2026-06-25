@@ -8,12 +8,14 @@ LONG continual run that assumption weakens — the encoder keeps training on lat
 tasks and its feature space *drifts*, so the stored task-A key slowly mis-targets
 its own region and the never-forget vote starts missing.
 
-Learnable Drift Compensation (Gomez-Villa et al. 2024, "Exemplar-free Continual
-Representation Learning via Learnable Drift Compensation",
-https://arxiv.org/abs/2407.08536) repairs this without rehearsal: periodically fit
-a small linear projector mapping the OLD encoder's features to the NEW encoder's
-features and push the stored keys through it, so they track the moving
-representation instead of being re-collected from exemplars.
+Drift compensation repairs this. The first attempt — a global linear projector
+(Learnable Drift Compensation, Gomez-Villa et al. 2024, arXiv:2407.08536) fit on
+recent inputs — REGRESSED here: fit on current-task inputs yet applied to all keys,
+it extrapolates old-task keys to the wrong place. The robust replacement is
+Semantic Drift Compensation (Yu et al. 2020, arXiv:2004.00440): move each stored key
+by the similarity-weighted *local* drift of a small region-covering set of anchors
+(replayed through the frozen-snapshot and current encoders), so an old-task key is
+corrected by old-task anchors, not by current-task extrapolation.
 
 This experiment runs a LENGTHENED ``SplitContinualTask`` (more steps/task ⇒ more
 encoder drift) with ``direct_vote=True`` under two arms — drift_realign off vs on —
@@ -114,9 +116,11 @@ def main():
     print(f"  key-drift cosine: {off[1]:.3f} → {on[1]:.3f} ({on[1] - off[1]:+.3f})")
     print("\nReading: over a LONG run the encoder drifts, so the never-forget key")
     print("written under task 0 slowly stops matching task-0 inputs (lower key-drift")
-    print("cosine). LDC re-projects the stored keys through a fitted old→new linear")
-    print("map so they track the moving representation — raising the key-drift cosine")
-    print("and keeping the verified vote on-target, which protects the earlier task.")
+    print("cosine). Semantic Drift Compensation moves each stored key by the LOCAL")
+    print("drift of nearby region-covering anchors (replayed through old/new encoders),")
+    print("raising the key-drift cosine and keeping the verified vote on-target. NB: the")
+    print("first global-linear projector REGRESSED here (fit on current-task inputs but")
+    print("applied to old-task keys → extrapolation); the local SDC estimate fixes that.")
 
 
 if __name__ == "__main__":

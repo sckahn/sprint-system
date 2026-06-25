@@ -172,11 +172,70 @@ def test_realign_recovers_alignment():
     assert float(post) > 0.9
 
 
+def test_realign_sdc_recovers_alignment():
+    # Anchor-based local drift compensation: anchors carry the known old->new drift,
+    # so realigned keys move back toward the originals.
+    torch.manual_seed(0)
+    dim = 8
+    originals = F.normalize(torch.randn(10, dim), dim=1)
+    a = torch.randn(dim, dim)
+    rot, _ = torch.linalg.qr(a)
+    rotated = originals @ rot.T                 # old (drifted) key positions
+    lv = LabelVault(dim=dim, n_classes=5)
+    for i in range(len(rotated)):
+        lv.write(rotated[i], label=i % 5, gate=1.0)
+    pre = F.cosine_similarity(F.normalize(lv.keys, dim=1), originals, dim=1).mean()
+    lv.realign_sdc(anchor_old=rotated, anchor_new=originals)   # observed drift field
+    post = F.cosine_similarity(F.normalize(lv.keys, dim=1), originals, dim=1).mean()
+    assert float(post) > float(pre)
+    assert float(post) > 0.9
+
+
+def test_realign_sdc_preserves_norms():
+    torch.manual_seed(1)
+    lv = LabelVault(dim=6, n_classes=5)
+    for _ in range(8):
+        lv.write(torch.randn(6), label=int(torch.randint(5, (1,))), gate=1.0)
+    before = lv.keys.norm(dim=1).clone()
+    ao = torch.randn(4, 6)
+    an = ao + 0.01 * torch.randn(4, 6)         # tiny drift
+    lv.realign_sdc(ao, an)
+    assert torch.allclose(before, lv.keys.norm(dim=1), atol=1e-5)
+
+
+def test_realign_sdc_noop_on_empty_or_anchorless():
+    lv = LabelVault(dim=4, n_classes=5)
+    lv.realign_sdc(torch.randn(3, 4), torch.randn(3, 4))   # empty vault
+    assert len(lv) == 0
+    lv.write(torch.randn(4), label=0, gate=1.0)
+    before = lv.keys.clone()
+    lv.realign_sdc(torch.zeros(0, 4), torch.zeros(0, 4))   # no anchors
+    assert torch.allclose(before, lv.keys)
+
+
+def test_realign_sdc_uses_local_not_global_drift():
+    # The whole point of SDC over the global-linear projector: a key is moved by
+    # the drift of anchors in ITS region, not by a global average. Two orthogonal
+    # regions whose anchors drift in different directions must move independently.
+    dim = 8
+    kA = torch.eye(dim)[0].clone()
+    kB = torch.eye(dim)[1].clone()
+    lv = LabelVault(dim=dim, n_classes=3)
+    lv.write(kA, label=0, gate=1.0)
+    lv.write(kB, label=1, gate=1.0)
+    ao = torch.stack([kA, kB])
+    an = torch.stack([F.normalize(kA + 0.5 * torch.eye(dim)[2], dim=0),   # A -> +e2
+                      F.normalize(kB + 0.5 * torch.eye(dim)[3], dim=0)])  # B -> +e3
+    lv.realign_sdc(ao, an, temp=0.1)
+    assert float(lv.keys[0][2]) > float(lv.keys[0][3]) + 0.05   # A took e2, not e3
+    assert float(lv.keys[1][3]) > float(lv.keys[1][2]) + 0.05   # B took e3, not e2
+
+
 def test_drift_realign_disabled_by_default():
     cfg = SVMPConfig(seed=0, n_classes=8)
     agent = SelfValidatingAgent(cfg, 16, direct_vote=True)
     assert agent.drift_realign is False
-    assert agent._drift_proj is None
+    assert agent._anchors == []
     assert agent._enc_snapshot is None
 
 

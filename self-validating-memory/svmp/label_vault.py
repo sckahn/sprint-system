@@ -152,6 +152,41 @@ class LabelVault:
         self.keys = F.normalize(projector(self.keys), dim=1) * norms
 
     @torch.no_grad()
+    def realign_sdc(self, anchor_old: torch.Tensor, anchor_new: torch.Tensor,
+                    temp: float = 0.2) -> None:
+        """Anchor-based *local* drift compensation for the stored keys (opt-in LDC++).
+
+        The global-linear :meth:`realign` regressed in practice: a single
+        ``nn.Linear`` fit on the *recent* (current-task) inputs is then applied to
+        ALL keys, so old-task keys — which live in a different region of feature
+        space than the fit saw — get extrapolated to the wrong place, *lowering*
+        their alignment (see ``examples/experiment_drift_realign.py``).
+
+        Semantic Drift Compensation (Yu et al. 2020, "Semantic Drift Compensation
+        for Class-Incremental Learning", https://arxiv.org/abs/2004.00440) fixes
+        this by estimating each prototype's drift *locally*: a stored key moves by
+        the similarity-weighted average of the observed drift of nearby anchors.
+        ``anchor_old`` / ``anchor_new`` are the encodings of a small region-covering
+        set of replayed inputs under the FROZEN-snapshot (old) and CURRENT (new)
+        encoder; their difference is the observed drift field. Because the anchors
+        cover *every* stored region (not just the current task), an old-task key is
+        moved by old-task anchors' drift, not by current-task extrapolation.
+
+        키 노름은 :meth:`write`/:meth:`realign` 과 똑같이 보존한다(방향만 보정).
+        ``drift_realign=False`` 기본 경로에선 호출되지 않으므로 의미 변화 없음.
+        """
+        if len(self) == 0 or anchor_old.shape[0] == 0:
+            return
+        drift = anchor_new - anchor_old                          # (M, dim)
+        k_dir = F.normalize(self.keys, dim=1)                    # (N, dim)
+        a_dir = F.normalize(anchor_old, dim=1)                   # (M, dim)
+        sim = k_dir @ a_dir.t()                                  # (N, M)
+        w = torch.softmax(sim / temp, dim=1)                     # (N, M)
+        shifted = self.keys + w @ drift                          # (N, dim)
+        norms = self.keys.norm(dim=1, keepdim=True)
+        self.keys = F.normalize(shifted, dim=1) * norms
+
+    @torch.no_grad()
     def vote(self, query: torch.Tensor, context=None) -> torch.Tensor:
         """Conviction-weighted class vote, gated by region *and* context match.
 

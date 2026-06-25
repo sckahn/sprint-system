@@ -99,10 +99,16 @@ class SelfValidatingAgent:
         # https://arxiv.org/abs/2407.08536). Built lazily below once the model
         # exists; default flag False ⇒ none of this is created or run.
         self.drift_realign = drift_realign
-        self._drift_proj = None
-        self._drift_opt = None
         self._enc_snapshot = None
-        self._recent_inputs: list[torch.Tensor] = []
+        # Region-covering anchor cache for Semantic Drift Compensation: a small set
+        # of raw inputs spanning the distinct input regions seen so far (added by an
+        # input-space novelty gate), replayed through old/new encoders to estimate
+        # the LOCAL drift field. Covers old-task regions too, unlike a recent-input
+        # ring — which is why the global-linear projector regressed.
+        self._anchors: list[torch.Tensor] = []
+        self._anchor_cov = 0.8
+        self._anchor_cap = 96
+        self._step_count = 0
         self.conformal = ConformalThreshold(alpha=0.1, window=500)
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
@@ -139,12 +145,8 @@ class SelfValidatingAgent:
         self.opt = torch.optim.Adam(backprop_params, lr=1e-3)
         self._history: list[int] = []
 
-        # LDC projector (opt-in): a dim→dim linear drift map with its own Adam,
-        # kept entirely separate from the backprop optimizer above so it never
-        # touches the representation gradients.
-        if self.drift_realign:
-            self._drift_proj = nn.Linear(cfg.dim, cfg.dim)
-            self._drift_opt = torch.optim.Adam(self._drift_proj.parameters(), lr=1e-2)
+        # Semantic Drift Compensation is parameter-free (a local, similarity-weighted
+        # drift average over replayed anchors), so no projector/optimizer is needed.
 
     # ---------------------------------------------------------------------
     def step(self, x: torch.Tensor, target: int,
@@ -247,14 +249,20 @@ class SelfValidatingAgent:
         if self.learn:
             self._backprop_step(x, retrieved, target, correct, loop_res)
 
-        # 7b) Learnable Drift Compensation (opt-in): keep a small ring of recent
-        #     inputs and, every cfg.learning.realign_every steps, fit the old→new
-        #     projector and realign the label-vault keys. Default off ⇒ skipped.
+        # 7b) Drift compensation (opt-in): maintain a region-covering anchor cache
+        #     (input-space novelty gate) and, every cfg.learning.realign_every steps,
+        #     realign the label-vault keys by the locally-estimated encoder drift.
+        #     Default off ⇒ skipped.
         if self.drift_realign and self.direct_vote:
-            self._recent_inputs.append(x.detach().flatten())
-            if len(self._recent_inputs) > 64:
-                self._recent_inputs.pop(0)
-            self._step_count = getattr(self, "_step_count", 0) + 1
+            xf = x.detach().flatten()
+            if not self._anchors:
+                self._anchors.append(xf)
+            elif len(self._anchors) < self._anchor_cap:
+                a = torch.stack(self._anchors)
+                novel = float(F.cosine_similarity(a, xf.unsqueeze(0), dim=1).max())
+                if novel < self._anchor_cov:        # a region not yet covered
+                    self._anchors.append(xf)
+            self._step_count += 1
             if self._step_count % cfg.learning.realign_every == 0:
                 self._maybe_realign()
 
@@ -287,37 +295,31 @@ class SelfValidatingAgent:
 
     # ---------------------------------------------------------------------
     def _maybe_realign(self) -> None:
-        """Fit the old→new drift projector on recent inputs and realign vault keys.
+        """Realign the decay-free vault keys to the drifting encoder (opt-in, SDC).
 
-        Learnable Drift Compensation (Gomez-Villa et al. 2024,
-        https://arxiv.org/abs/2407.08536). On the FIRST trigger there is no old
-        encoder yet, so we only cache a frozen deep-copy of the current encoder as
-        the snapshot. On every later trigger we encode a small batch of recent
-        inputs through both the frozen snapshot (old features) and the live encoder
-        (new features), fit ``self._drift_proj`` with a few MSE(old→new) steps, push
-        it through :meth:`LabelVault.realign`, and refresh the snapshot to the
-        current encoder. Default off ⇒ never reached.
+        Semantic Drift Compensation (Yu et al. 2020, https://arxiv.org/abs/2004.00440)
+        — the robust replacement for the global-linear projector, which regressed
+        because it was fit on current-task inputs yet applied to old-task keys. On
+        the FIRST trigger there is no old encoder, so we only cache a frozen
+        snapshot. On every later trigger we encode the region-covering anchor cache
+        through both the frozen snapshot (old features) and the live encoder (new
+        features) and pass the pair to :meth:`LabelVault.realign_sdc`, which moves
+        each key by the similarity-weighted *local* drift of nearby anchors. Then we
+        refresh the snapshot. Default off ⇒ never reached.
         """
         if self._enc_snapshot is None:
-            self._enc_snapshot = copy.deepcopy(self.model.encoder)
-            for p in self._enc_snapshot.parameters():
-                p.requires_grad_(False)
-            self._enc_snapshot.eval()
+            self._snapshot_encoder()
             return
-        if not self._recent_inputs:
+        if not self._anchors:
             return
-        batch = torch.stack(self._recent_inputs)
+        batch = torch.stack(self._anchors)
         with torch.no_grad():
             old_enc = self._enc_snapshot(batch)
             new_enc = self.model.encoder(batch)
-        # A few MSE(old→new) steps to fit the linear drift map.
-        for _ in range(20):
-            self._drift_opt.zero_grad()
-            loss = F.mse_loss(self._drift_proj(old_enc), new_enc)
-            loss.backward()
-            self._drift_opt.step()
-        self.label_vault.realign(self._drift_proj)
-        # Refresh the snapshot so the next window measures the next drift increment.
+        self.label_vault.realign_sdc(old_enc, new_enc)
+        self._snapshot_encoder()
+
+    def _snapshot_encoder(self) -> None:
         self._enc_snapshot = copy.deepcopy(self.model.encoder)
         for p in self._enc_snapshot.parameters():
             p.requires_grad_(False)
