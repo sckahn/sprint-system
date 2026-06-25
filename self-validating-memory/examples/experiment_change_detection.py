@@ -159,11 +159,12 @@ def main():
           f"run-length posterior\n  fires {bl:.1f} steps after the true boundary "
           f"vs EMA's {el:.1f} (lower = faster), detecting\n  {bd}/{bnt} boundaries "
           f"vs {ed}/{ent}, at a {bf:.3f} vs {ef:.3f} false-alarm rate per segment.")
-    print(f"  Faster, cleaner detection feeds the SAME reward-probing recogniser, "
-          f"so revisit\n  accuracy is {br:.3f} (BOCD) vs {er:.3f} (EMA) at "
-          f"{bc:.0f} vs {ec:.0f} probe steps. BOCD trades the\n  hand-tuned "
-          f"drop/established gap for a principled changepoint probability and "
-          f"attacks\n  the detection bottleneck part-5 named — defaults stay EMA, "
+    print(f"  Both feed the SAME reward-probing recogniser, so revisit accuracy is "
+          f"{br:.3f} (BOCD)\n  vs {er:.3f} (EMA) — essentially a wash — but BOCD reaches "
+          f"it at {bc:.0f} vs {ec:.0f} probe\n  steps ({(1 - bc / ec) * 100:.0f}% less "
+          f"search) and fires sooner. The win is EFFICIENCY +\n  PRINCIPLE: it matches "
+          f"EMA's recovery at roughly half the compute, with no hand-tuned\n  "
+          f"drop/established thresholds — just one hazard prior. Defaults stay EMA, "
           f"so this is opt-in.")
 
 

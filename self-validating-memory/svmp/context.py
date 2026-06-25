@@ -40,24 +40,27 @@ class BOCDDetector:
     상태:
       * ``rl`` — run-length 사후분포 (정규화된 텐서).
       * ``a``, ``b`` — run-length 별 Beta 충분통계(보상 1/0 누적 카운트).
-    ``observe`` 는 한 번의 이진 보상을 받아, run_length==0 의 사후 질량이
-    ``min_change_prob`` 이상이고 warmup 을 지났을 때 True(=regime 변경)를 낸다.
+      * ``rlen`` — 각 사후 성분의 run-length 값(가지치기 후 인덱스와 어긋나므로 추적).
+    ``observe`` 는 한 번의 이진 보상을 받아, MAP run-length 가 established 된 상태에서
+    ``reset_floor`` 이하로 급락하는 하강 엣지에서, warmup 을 지났을 때 True 를 낸다.
     """
 
     def __init__(self, hazard: float = 1 / 200, alpha0: float = 1.0,
                  beta0: float = 1.0, warmup: int = 80, max_run: int = 300,
-                 min_change_prob: float = 0.5, change_window: int = 5):
+                 established_run: int = 20, reset_floor: int = 12):
         self.hazard = hazard
         self.alpha0 = alpha0
         self.beta0 = beta0
         self.warmup = warmup
         self.max_run = max_run
-        self.min_change_prob = min_change_prob
-        # ``rl[0]`` 만으로는 한 스텝당 changepoint 사후가 hazard 수준에 머물러
-        # (Adams-MacKay 재귀의 성질) 임계 0.5 에 닿지 않는다. 그래서 "방금
-        # 리셋됐다"는 신호를 가장 짧은 run-length 들의 사후 질량 합으로 본다:
-        # P(run_length < change_window). changepoint 직후 이 값이 급등한다.
-        self.change_window = change_window
+        # 절대 질량 임계(``rl[0] >= 0.5`` 등)는 잘못된 신호다: Adams-MacKay 재귀에서
+        # 정상 구간의 changepoint 사후는 hazard 수준(~0.005)에 머물고, 실제 경계에서도
+        # r=0 질량은 ~0.02 까지만 오른다(이 잡음 많은 이진 보상 스트림). 대신 표준
+        # 신호인 **MAP run-length 리셋**을 본다: changepoint 직후 사후 최빈 run-length
+        # 가 길게 established 된 값에서 ~0 으로 급락한다. ``established_run`` 이상으로
+        # 자란 run 이 ``reset_floor`` 이하로 떨어지는 하강 엣지에서 발화한다.
+        self.established_run = established_run
+        self.reset_floor = reset_floor
         self.reset()
 
     def reset(self) -> None:
@@ -66,13 +69,16 @@ class BOCDDetector:
         self.rl = torch.ones(1)
         self.a = torch.tensor([self.alpha0])
         self.b = torch.tensor([self.beta0])
+        # run-length '값'을 사후와 평행하게 추적(가지치기 후 인덱스≠run-length 이므로).
+        self.rlen = torch.zeros(1)
+        self._prev_rmap = 0.0
 
     def observe(self, reward01: float) -> bool:
         """이진 보상 하나를 받아 run-length 사후를 갱신; changepoint면 True.
 
-        run_length==0 의 사후 질량이 ``min_change_prob`` 이상이고 warmup 을
-        지났을 때만 발화한다. warmup 가드는 EMA 검출기와 동일하게, 학습 초기
-        정확도가 낮지만 *상승 중*일 때의 거짓 경보를 막는다.
+        MAP run-length 가 established 된 상태에서 ``reset_floor`` 이하로 급락하는
+        하강 엣지에서, 그리고 warmup 을 지났을 때만 발화한다. warmup 가드는 EMA
+        검출기와 동일하게, 학습 초기 정확도가 낮지만 *상승 중*일 때의 거짓 경보를 막는다.
         """
         self.t += 1
         x = 1.0 if reward01 >= 0.5 else 0.0
@@ -91,6 +97,8 @@ class BOCDDetector:
         # Beta 충분통계: r=0 에 사전을 prepend, 살아남은 run 들은 이번 보상으로 증분.
         new_a = torch.cat([torch.tensor([self.alpha0]), self.a + x])
         new_b = torch.cat([torch.tensor([self.beta0]), self.b + (1.0 - x)])
+        # run-length 값: r=0 을 prepend, 나머지는 1씩 증가.
+        new_rlen = torch.cat([torch.zeros(1), self.rlen + 1.0])
         # max_run 초과 시 사후 질량 상위-K 만 유지(가지치기)해 메모리를 묶는다.
         if new_rl.numel() > self.max_run:
             keep = torch.topk(new_rl, self.max_run).indices
@@ -99,10 +107,16 @@ class BOCDDetector:
             new_rl = new_rl / new_rl.sum()
             new_a = new_a[keep]
             new_b = new_b[keep]
-        self.rl, self.a, self.b = new_rl, new_a, new_b
-        # changepoint 신호: 가장 짧은 run-length 들의 사후 질량(=방금 리셋됐을 확률).
-        change_prob = float(self.rl[:self.change_window].sum())
-        return bool(change_prob >= self.min_change_prob and self.t > self.warmup)
+            new_rlen = new_rlen[keep]
+        self.rl, self.a, self.b, self.rlen = new_rl, new_a, new_b, new_rlen
+        # changepoint 신호: MAP run-length(최빈 run-length)의 리셋 하강 엣지.
+        # established 된 긴 run 이 reset_floor 이하로 무너질 때 = "방금 바뀌었다".
+        r_map = float(self.rlen[int(torch.argmax(self.rl))])
+        fired = (self.t > self.warmup
+                 and self._prev_rmap >= self.established_run
+                 and r_map <= self.reset_floor)
+        self._prev_rmap = r_map
+        return bool(fired)
 
 
 class ContextInferrer:
