@@ -62,6 +62,17 @@ class LearningConfig:
     gate_source_coef: float = 1.0
     gate_bias: float = -0.5            # default closed; opens under surprise/gap
 
+    # Benna-Fusi metaplastic consolidation buffer (opt-in, default OFF).
+    # Real-valued consolidation variable c that hardens synapses that have been
+    # written often: c += alpha·g·|dw|, and each write is scaled by 1/(c+eps).
+    # Reference: Zenke & Laborieux, "Theories of synaptic memory consolidation
+    # and intelligent plasticity for continual learning"
+    # (https://arxiv.org/abs/2405.16922), §Benna-Fusi cascade / metaplasticity.
+    # Defaults reproduce the plain three-factor update bitwise (metaplastic=False).
+    metaplastic: bool = False          # 켜면 consolidation buffer 활성화
+    meta_alpha: float = 0.1            # consolidation 누적 속도 (c += alpha·g·|dw|)
+    meta_eps: float = 1.0             # write 스케일 1/(c+eps); eps=1 ⇒ 초기 무변화
+
 
 @dataclass
 class RoleConfig:

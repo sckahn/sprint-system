@@ -43,6 +43,10 @@ class ThreeFactorLearner:
                                      cfg.eligibility_decay)
         self.neuromod = Neuromodulator(cfg)
         self.gate = ConsolidationGate(cfg)
+        # Benna-Fusi metaplastic consolidation buffer (per-weight, real-valued).
+        # Inert unless cfg.metaplastic is True; allocated regardless so the
+        # buffer survives episode resets and matches the weight tensor exactly.
+        self.consol = torch.zeros_like(layer.weight)
 
     def observe(self, pre: torch.Tensor, post_signal: torch.Tensor) -> None:
         """Accumulate eligibility from this round's pre/post activity."""
@@ -64,8 +68,19 @@ class ThreeFactorLearner:
             g = gate_override
             self.gate.last = g
         dw = self.cfg.lr * m * g * self.elig.trace
+        if self.cfg.metaplastic:
+            # Benna-Fusi metaplasticity: synapses that have absorbed many gated
+            # writes harden (large c) and resist further change — protecting old
+            # task structure in the shared head (Zenke & Laborieux, §metaplasticity,
+            # https://arxiv.org/abs/2405.16922). meta_eps keeps the first write
+            # at full magnitude (1/(0+eps) = 1 when eps=1).
+            dw = dw / (self.consol + self.cfg.meta_eps)
         with torch.no_grad():
             self.layer.weight += dw
+            if self.cfg.metaplastic:
+                # Consolidate proportionally to how strongly the gate fired and
+                # how large the (already metaplastically-scaled) write was.
+                self.consol += self.cfg.meta_alpha * g * dw.abs()
         return {
             "neuromod": round(m, 4),
             "gate": round(g, 4),
