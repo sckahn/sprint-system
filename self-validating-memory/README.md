@@ -473,15 +473,17 @@ prequential, A2*/B2*는 **되돌아온** 세그먼트:
 | **무손실 MoE 균형** | aux-loss-free balancing (DeepSeek, arXiv:2408.15664) | `moe.py` expert_bias, `MoEConfig.loss_free_balance` | ✅ 부하불균형 MaxVio 0.118→**0.028(4.2×)**, 정확도 −0.003 |
 | **보정-게이트 검증** | entropy/conformal abstention + ACI (arXiv:2401.12708) | `calibration.py`+`adversarial.py`, `uncertainty_gate`, `verify_uncertainty_tau` | ◐ Split: acc 0.880→**0.889**, ECE 0.069→**0.055**, 검색비용↑ (품질↔연산 노브) |
 | **AMR 드리프트 정렬** | Adaptive Memory Realignment (Ashrafee'25, arXiv:2507.02310) | `label_vault.py:realign_region`, `tasks.py:ConceptDriftTask`, `amr` | ✅ 드리프트영역 acc 0.833→**0.893**, 비드리프트 0.99 유지, vault 257 보존(blanket-decay는 10으로 붕괴) |
-| **LDC 키 투영 보정** | Learnable Drift Compensation (Gomez-Villa'24, arXiv:2407.08536) | `label_vault.py:realign`, `drift_realign`, `realign_every` | ✗ 현 구현 순감(망각 0.26→0.75) — 전역 선형 맵이 영역별 드리프트 오정렬. 재설계 필요 |
+| **드리프트 보정 (SDC)** | Semantic Drift Compensation (Yu'20, arXiv:2004.00440) — 전역선형 LDC(Gomez-Villa'24, arXiv:2407.08536) 회귀를 대체 | `label_vault.py:realign_sdc`, `drift_realign` | ✅ 망각 0.262→0.235, 키-드리프트 cos 0.723→0.736 (전역선형은 0.75/0.49로 역효과였음) |
 
-**스코어카드**: 명확한 승리 4종(BOCD·Benna-Fusi·MoE·AMR) + 유용한 노브 1종(보정 게이트) +
-미해결 1종(LDC, opt-in이라 무해). 모두 전용 실험(`examples/experiment_*.py`)으로 재현 가능.
+**스코어카드**: 명확한 승리 5종(BOCD·Benna-Fusi·MoE·AMR·SDC) + 유용한 노브 1종(보정 게이트).
+모두 전용 실험(`examples/experiment_*.py`)으로 재현 가능.
 
 - **BOCD**가 part-5에서 지목한 *감지 병목*을 직접 공략: EMA의 손튜닝 `drop/established` 임계를
   hazard 사전 하나로 대체하고, **MAP run-length 리셋** 신호로 동등 정확도를 절반 연산에 달성.
-- **AMR vs LDC 대비**가 정직한 교훈: 같은 "키가 낡았다" 문제라도, *영역 선택적 제거*(AMR)는
-  깔끔히 작동하지만 *전역 선형 재투영*(LDC)은 이 환경에서 역효과 — 측정으로 갈렸다.
+- **드리프트 보정의 교훈**(측정으로 갈림): 같은 "키가 낡았다" 문제에서 *전역 선형 재투영*(LDC)은
+  현재-과제 입력으로 적합해 옛-과제 키를 외삽 → **역효과**(0.26→0.75)였다. *영역-국소 드리프트*
+  (SDC, 앵커 기반)로 바꾸자 부호가 뒤집혀 **유효**(0.26→0.235)해졌다. AMR(영역 선택 제거)도
+  같은 "국소가 전역을 이긴다" 원리.
 
 ---
 
@@ -489,7 +491,7 @@ prequential, A2*/B2*는 **되돌아온** 세그먼트:
 
 ```bash
 pip install pytest
-python -m pytest -q          # 100 passed
+python -m pytest -q          # 104 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,
@@ -499,7 +501,7 @@ python -m pytest -q          # 100 passed
 손잡이·망각 지표·LabelVault 직접투표·컨텍스트 키 분리·ContextInferrer 체제전환·
 RecognizingContextManager 보상 프로빙 재인식·early-accept 흡수(Phase 6 + 후속), 그리고
 신기술 애드온 6종(BOCD 변화감지·Benna-Fusi 메타가소성·무손실 MoE 균형·entropy/conformal
-보정·AMR 영역 정렬·LDC 키 재투영 — 전부 default-OFF 무회귀 포함)을 검증한다.
+보정·AMR 영역 정렬·SDC 드리프트 보정 — 전부 default-OFF 무회귀 포함)을 검증한다.
 실 retriever 실험은 다운로드가 필요해 테스트엔 미포함.
 
 ---
@@ -523,6 +525,7 @@ RecognizingContextManager 보상 프로빙 재인식·early-accept 흡수(Phase 
   프로빙 재인식**으로 되돌아온 과제(B→A) 복원은 갭의 89%(경계 줌). 완전 task-free 합성(감지+프로빙)도
   0.72로 망각 흡수 — 잔여 병목은 이제 *감지*(`RecognizingContextManager`). 이 감지 병목은
   **BOCD 애드온**으로 일부 완화(동등 정확도·절반 연산, 위 *신기술 애드온* 참조)
-- **LDC 미해결**: decay-free 키의 장기 표현 드리프트를 전역 선형 재투영으로 보정하려 했으나
-  현 구현은 역효과(망각 0.26→0.75) — 단일 선형 맵이 영역별 드리프트를 함께 잡지 못함. 영역-국소
-  투영 또는 conviction 가중 피팅이 후속 과제. opt-in(`drift_realign`)이라 기본 경로엔 무영향
+- **드리프트 보정**: 장기 인코더 드리프트로 decay-free 키가 자기 영역을 빗나가는 문제. 전역 선형
+  재투영(LDC)은 옛-과제 키 외삽으로 역효과였고(0.26→0.75), **영역-국소 SDC**(앵커 기반)로
+  교체해 유효(0.26→0.235)해짐. 효과는 modest(합성 과제의 인코더 드리프트가 작음) — 더 큰
+  드리프트 레짐·실데이터에서의 검증은 후속. opt-in(`drift_realign`)이라 기본 경로엔 무영향
