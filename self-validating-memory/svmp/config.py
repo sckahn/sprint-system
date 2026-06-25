@@ -85,6 +85,16 @@ class LearningConfig:
     meta_alpha: float = 0.1            # consolidation 누적 속도 (c += alpha·g·|dw|)
     meta_eps: float = 1.0             # write 스케일 1/(c+eps); eps=1 ⇒ 초기 무변화
 
+    # Learnable Drift Compensation period (opt-in, default OFF via agent flag).
+    # Every ``realign_every`` steps the drift-realign agent snapshots the encoder,
+    # fits a linear old→new projector on recent inputs, and re-projects the stored
+    # label-vault keys so they track the drifting representation. Reference:
+    # Gomez-Villa et al., "Exemplar-free Continual Representation Learning via
+    # Learnable Drift Compensation" (https://arxiv.org/abs/2407.08536).
+    # Only consulted when the agent is built with drift_realign=True ⇒ no change
+    # to existing behaviour by default.
+    realign_every: int = 200           # drift-realign 주기 (steps)
+
 
 @dataclass
 class RoleConfig:

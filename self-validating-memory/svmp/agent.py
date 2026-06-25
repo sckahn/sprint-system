@@ -19,6 +19,7 @@ Two learning pathways run side by side, by design:
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 
 import torch
@@ -60,7 +61,7 @@ class SelfValidatingAgent:
                  use_vault: bool = True, force_gate: float | None = None,
                  direct_vote: bool = False, vote_scale: float = 6.0,
                  ctx_dim: int = 0, uncertainty_gate: bool = False,
-                 amr: bool = False):
+                 amr: bool = False, drift_realign: bool = False):
         torch.manual_seed(cfg.seed)
         self.cfg = cfg
         self.learn = learn
@@ -89,6 +90,19 @@ class SelfValidatingAgent:
         self.amr = amr
         self.amr_manager = (RecognizingContextManager(auto_detect=True)
                             if amr else None)
+        # Learnable Drift Compensation (opt-in; default OFF ⇒ unchanged). When on,
+        # the agent periodically fits a small linear projector mapping the FROZEN
+        # snapshot encoder's features to the CURRENT encoder's features and re-
+        # projects the decay-free label-vault keys through it, so the stored keys
+        # track the drifting representation rather than mis-targeting the moving
+        # space. See LabelVault.realign (Gomez-Villa et al. 2024,
+        # https://arxiv.org/abs/2407.08536). Built lazily below once the model
+        # exists; default flag False ⇒ none of this is created or run.
+        self.drift_realign = drift_realign
+        self._drift_proj = None
+        self._drift_opt = None
+        self._enc_snapshot = None
+        self._recent_inputs: list[torch.Tensor] = []
         self.conformal = ConformalThreshold(alpha=0.1, window=500)
         self.model = SelfValidatingModel(cfg, input_dim)
         self.vault = GrowingVault(cfg.vault)
@@ -124,6 +138,13 @@ class SelfValidatingAgent:
         )
         self.opt = torch.optim.Adam(backprop_params, lr=1e-3)
         self._history: list[int] = []
+
+        # LDC projector (opt-in): a dim→dim linear drift map with its own Adam,
+        # kept entirely separate from the backprop optimizer above so it never
+        # touches the representation gradients.
+        if self.drift_realign:
+            self._drift_proj = nn.Linear(cfg.dim, cfg.dim)
+            self._drift_opt = torch.optim.Adam(self._drift_proj.parameters(), lr=1e-2)
 
     # ---------------------------------------------------------------------
     def step(self, x: torch.Tensor, target: int,
@@ -226,6 +247,17 @@ class SelfValidatingAgent:
         if self.learn:
             self._backprop_step(x, retrieved, target, correct, loop_res)
 
+        # 7b) Learnable Drift Compensation (opt-in): keep a small ring of recent
+        #     inputs and, every cfg.learning.realign_every steps, fit the old→new
+        #     projector and realign the label-vault keys. Default off ⇒ skipped.
+        if self.drift_realign and self.direct_vote:
+            self._recent_inputs.append(x.detach().flatten())
+            if len(self._recent_inputs) > 64:
+                self._recent_inputs.pop(0)
+            self._step_count = getattr(self, "_step_count", 0) + 1
+            if self._step_count % cfg.learning.realign_every == 0:
+                self._maybe_realign()
+
         self.ece.update(conf_val, correct)
         # Feed the calibrated (confidence, correctness) stream into the conformal
         # threshold so its empirical quantile / coverage can be inspected. Pure
@@ -252,6 +284,44 @@ class SelfValidatingAgent:
         if self.direct_vote:
             logits = logits + self.vote_scale * self.label_vault.vote(enc, context)
         return int(logits.argmax())
+
+    # ---------------------------------------------------------------------
+    def _maybe_realign(self) -> None:
+        """Fit the old→new drift projector on recent inputs and realign vault keys.
+
+        Learnable Drift Compensation (Gomez-Villa et al. 2024,
+        https://arxiv.org/abs/2407.08536). On the FIRST trigger there is no old
+        encoder yet, so we only cache a frozen deep-copy of the current encoder as
+        the snapshot. On every later trigger we encode a small batch of recent
+        inputs through both the frozen snapshot (old features) and the live encoder
+        (new features), fit ``self._drift_proj`` with a few MSE(old→new) steps, push
+        it through :meth:`LabelVault.realign`, and refresh the snapshot to the
+        current encoder. Default off ⇒ never reached.
+        """
+        if self._enc_snapshot is None:
+            self._enc_snapshot = copy.deepcopy(self.model.encoder)
+            for p in self._enc_snapshot.parameters():
+                p.requires_grad_(False)
+            self._enc_snapshot.eval()
+            return
+        if not self._recent_inputs:
+            return
+        batch = torch.stack(self._recent_inputs)
+        with torch.no_grad():
+            old_enc = self._enc_snapshot(batch)
+            new_enc = self.model.encoder(batch)
+        # A few MSE(old→new) steps to fit the linear drift map.
+        for _ in range(20):
+            self._drift_opt.zero_grad()
+            loss = F.mse_loss(self._drift_proj(old_enc), new_enc)
+            loss.backward()
+            self._drift_opt.step()
+        self.label_vault.realign(self._drift_proj)
+        # Refresh the snapshot so the next window measures the next drift increment.
+        self._enc_snapshot = copy.deepcopy(self.model.encoder)
+        for p in self._enc_snapshot.parameters():
+            p.requires_grad_(False)
+        self._enc_snapshot.eval()
 
     # ---------------------------------------------------------------------
     def _backprop_step(self, x: torch.Tensor, retrieved: torch.Tensor,

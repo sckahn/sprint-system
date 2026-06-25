@@ -129,6 +129,29 @@ class LabelVault:
         return pruned
 
     @torch.no_grad()
+    def realign(self, projector) -> None:
+        """Re-project every stored key through a learned old→new drift map (opt-in LDC).
+
+        Learnable Drift Compensation (Gomez-Villa et al. 2024, "Exemplar-free
+        Continual Representation Learning via Learnable Drift Compensation",
+        https://arxiv.org/abs/2407.08536): when the encoder keeps training the
+        feature space *drifts*, so a key written under the old encoder no longer
+        lands where the same input now encodes — the never-forget vote starts
+        mis-targeting. LDC fits a small linear projector mapping old→new encoder
+        features and applies it to the stored prototypes/keys so they track the
+        moving representation instead of being re-collected.
+
+        키마다(per-key) 노름은 :meth:`write` 와 똑같이 보존한다 — only the *direction*
+        is realigned (projector ∘ normalize), the conviction-encoding magnitude is
+        carried over unchanged. With the default agent (``drift_realign=False``)
+        this is never called, so semantics are unchanged.
+        """
+        if len(self) == 0:
+            return
+        norms = self.keys.norm(dim=1, keepdim=True)
+        self.keys = F.normalize(projector(self.keys), dim=1) * norms
+
+    @torch.no_grad()
     def vote(self, query: torch.Tensor, context=None) -> torch.Tensor:
         """Conviction-weighted class vote, gated by region *and* context match.
 

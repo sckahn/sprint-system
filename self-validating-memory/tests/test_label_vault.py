@@ -1,5 +1,6 @@
 """Tests for the decay-free verified-fact memory and its wiring into the agent."""
 import torch
+import torch.nn.functional as F
 
 from svmp.config import SVMPConfig
 from svmp.agent import SelfValidatingAgent
@@ -111,6 +112,72 @@ def test_amr_disabled_by_default():
     agent = SelfValidatingAgent(cfg, 16, direct_vote=True)
     assert agent.amr is False
     assert agent.amr_manager is None
+
+
+# --- Learnable Drift Compensation: realign stored keys (opt-in) ------------
+def test_realign_preserves_norms():
+    # A near-identity projector must leave each key's magnitude exactly unchanged
+    # (only direction is realigned), just like write() preserves per-key norm.
+    torch.manual_seed(0)
+    lv = LabelVault(dim=6, n_classes=5)
+    for _ in range(5):
+        k = torch.randn(6)
+        lv.write(k, label=int(torch.randint(5, (1,))), gate=1.0)
+    before = lv.keys.norm(dim=1).clone()
+    proj = torch.nn.Linear(6, 6)
+    with torch.no_grad():                      # near-identity map
+        proj.weight.copy_(torch.eye(6) + 0.01 * torch.randn(6, 6))
+        proj.bias.zero_()
+    lv.realign(proj)
+    after = lv.keys.norm(dim=1)
+    assert torch.allclose(before, after, atol=1e-5)
+
+
+def test_realign_noop_on_empty_vault():
+    lv = LabelVault(dim=4, n_classes=5)
+    proj = torch.nn.Linear(4, 4)
+    lv.realign(proj)                           # must not raise / change anything
+    assert len(lv) == 0
+
+
+def test_realign_recovers_alignment():
+    # Synthetically rotate the stored keys (simulating encoder drift), fit a
+    # projector on (rotated, original) pairs, then realign: cosine of the realigned
+    # keys back to the originals must improve toward 1.
+    torch.manual_seed(0)
+    dim = 8
+    originals = F.normalize(torch.randn(10, dim), dim=1)
+    # A fixed rotation stands in for the encoder's drift old->new.
+    a = torch.randn(dim, dim)
+    rot, _ = torch.linalg.qr(a)                # orthogonal rotation
+    rotated = originals @ rot.T
+
+    lv = LabelVault(dim=dim, n_classes=5)
+    for i in range(len(rotated)):
+        lv.write(rotated[i], label=i % 5, gate=1.0)
+    pre = F.cosine_similarity(F.normalize(lv.keys, dim=1), originals, dim=1).mean()
+
+    # Fit projector mapping rotated(old) -> original(new).
+    proj = torch.nn.Linear(dim, dim)
+    opt = torch.optim.Adam(proj.parameters(), lr=1e-2)
+    for _ in range(400):
+        opt.zero_grad()
+        loss = F.mse_loss(proj(rotated), originals)
+        loss.backward()
+        opt.step()
+
+    lv.realign(proj)
+    post = F.cosine_similarity(F.normalize(lv.keys, dim=1), originals, dim=1).mean()
+    assert float(post) > float(pre)
+    assert float(post) > 0.9
+
+
+def test_drift_realign_disabled_by_default():
+    cfg = SVMPConfig(seed=0, n_classes=8)
+    agent = SelfValidatingAgent(cfg, 16, direct_vote=True)
+    assert agent.drift_realign is False
+    assert agent._drift_proj is None
+    assert agent._enc_snapshot is None
 
 
 # --- context keys: conflicting mappings disambiguated by context ----------
