@@ -461,11 +461,35 @@ prequential, A2*/B2*는 **되돌아온** 세그먼트:
 
 ---
 
+## 신기술 애드온 (2024–2026 SOTA, 전부 opt-in·기본 OFF)
+
+웹검색으로 조사·검증한 최신 기법 6종을 각 서브시스템에 도입했다. **전부 기본 OFF**(플래그/임계)라
+켜지 않으면 기존 동작·실험·테스트가 바이트 동일 — 무회귀. 각 항목은 전용 실험으로 전/후를 측정한다.
+
+| 애드온 | 근거 기법 (논문) | 모듈 / 켜는 법 | 측정된 효과 (전 → 후, n=4) |
+|--------|------------------|----------------|---------------------------|
+| **BOCD 변화감지** | Bayesian Online Changepoint Detection (Adams&MacKay'07, arXiv:0710.3742; Beta-Bernoulli/MOCA) | `context.py:BOCDDetector`, `ContextInferrer(detector='bocd')` | ✅ revisit 0.719(EMA)≈**0.696**을 **probe 360→194(−46%)** 로. 손튜닝 임계 0개 |
+| **Benna-Fusi 메타가소성** | metaplasticity (Zenke&Laborieux, arXiv:2405.16922) | `learning/three_factor.py`, `LearningConfig.metaplastic` | ✅ 헤드 망각 +0.962→**+0.903**, 최종 0.478→**0.541** |
+| **무손실 MoE 균형** | aux-loss-free balancing (DeepSeek, arXiv:2408.15664) | `moe.py` expert_bias, `MoEConfig.loss_free_balance` | ✅ 부하불균형 MaxVio 0.118→**0.028(4.2×)**, 정확도 −0.003 |
+| **보정-게이트 검증** | entropy/conformal abstention + ACI (arXiv:2401.12708) | `calibration.py`+`adversarial.py`, `uncertainty_gate`, `verify_uncertainty_tau` | ◐ Split: acc 0.880→**0.889**, ECE 0.069→**0.055**, 검색비용↑ (품질↔연산 노브) |
+| **AMR 드리프트 정렬** | Adaptive Memory Realignment (Ashrafee'25, arXiv:2507.02310) | `label_vault.py:realign_region`, `tasks.py:ConceptDriftTask`, `amr` | ✅ 드리프트영역 acc 0.833→**0.893**, 비드리프트 0.99 유지, vault 257 보존(blanket-decay는 10으로 붕괴) |
+| **LDC 키 투영 보정** | Learnable Drift Compensation (Gomez-Villa'24, arXiv:2407.08536) | `label_vault.py:realign`, `drift_realign`, `realign_every` | ✗ 현 구현 순감(망각 0.26→0.75) — 전역 선형 맵이 영역별 드리프트 오정렬. 재설계 필요 |
+
+**스코어카드**: 명확한 승리 4종(BOCD·Benna-Fusi·MoE·AMR) + 유용한 노브 1종(보정 게이트) +
+미해결 1종(LDC, opt-in이라 무해). 모두 전용 실험(`examples/experiment_*.py`)으로 재현 가능.
+
+- **BOCD**가 part-5에서 지목한 *감지 병목*을 직접 공략: EMA의 손튜닝 `drop/established` 임계를
+  hazard 사전 하나로 대체하고, **MAP run-length 리셋** 신호로 동등 정확도를 절반 연산에 달성.
+- **AMR vs LDC 대비**가 정직한 교훈: 같은 "키가 낡았다" 문제라도, *영역 선택적 제거*(AMR)는
+  깔끔히 작동하지만 *전역 선형 재투영*(LDC)은 이 환경에서 역효과 — 측정으로 갈렸다.
+
+---
+
 ## 테스트
 
 ```bash
 pip install pytest
-python -m pytest -q          # 75 passed
+python -m pytest -q          # 100 passed
 ```
 
 `tests/`는 예산 사망/회복, 게이트 차단, 확신도 보정, top-k 과금, 3-인자 갱신 조건,
@@ -473,7 +497,9 @@ python -m pytest -q          # 75 passed
 엔트로피 정규화), 실 EmbeddingRetriever(코사인 top-k), Phase 5 자기놀이(grounded 심판
 복구 vs 랜덤 심판), end-to-end 학습(정확도 > chance, 생존), 연속학습 harness·ablation
 손잡이·망각 지표·LabelVault 직접투표·컨텍스트 키 분리·ContextInferrer 체제전환·
-RecognizingContextManager 보상 프로빙 재인식·early-accept 흡수(Phase 6 + 후속)를 검증한다.
+RecognizingContextManager 보상 프로빙 재인식·early-accept 흡수(Phase 6 + 후속), 그리고
+신기술 애드온 6종(BOCD 변화감지·Benna-Fusi 메타가소성·무손실 MoE 균형·entropy/conformal
+보정·AMR 영역 정렬·LDC 키 재투영 — 전부 default-OFF 무회귀 포함)을 검증한다.
 실 retriever 실험은 다운로드가 필요해 테스트엔 미포함.
 
 ---
@@ -495,4 +521,8 @@ RecognizingContextManager 보상 프로빙 재인식·early-accept 흡수(Phase 
   **라벨 충돌형**(도메인 증분)에선 무효(최종 Δ−0.01). **컨텍스트 키**(`ctx_dim`)로 충돌도
   해결됨을 증명(오라클 0.58→0.87); 과제 ID 없는 **추론 컨텍스트**는 부분 해결(~39%), **보상
   프로빙 재인식**으로 되돌아온 과제(B→A) 복원은 갭의 89%(경계 줌). 완전 task-free 합성(감지+프로빙)도
-  0.72로 망각 흡수 — 잔여 병목은 이제 *감지*(`RecognizingContextManager`)
+  0.72로 망각 흡수 — 잔여 병목은 이제 *감지*(`RecognizingContextManager`). 이 감지 병목은
+  **BOCD 애드온**으로 일부 완화(동등 정확도·절반 연산, 위 *신기술 애드온* 참조)
+- **LDC 미해결**: decay-free 키의 장기 표현 드리프트를 전역 선형 재투영으로 보정하려 했으나
+  현 구현은 역효과(망각 0.26→0.75) — 단일 선형 맵이 영역별 드리프트를 함께 잡지 못함. 영역-국소
+  투영 또는 conviction 가중 피팅이 후속 과제. opt-in(`drift_realign`)이라 기본 경로엔 무영향
