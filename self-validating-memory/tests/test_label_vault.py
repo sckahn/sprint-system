@@ -4,7 +4,7 @@ import torch
 from svmp.config import SVMPConfig
 from svmp.agent import SelfValidatingAgent
 from svmp.label_vault import LabelVault
-from svmp.context import ContextInferrer, RecognizingContextManager
+from svmp.context import BOCDDetector, ContextInferrer, RecognizingContextManager
 from svmp.tasks import SplitContinualTask
 
 
@@ -131,6 +131,48 @@ def test_inferrer_never_exceeds_slots():
         for _ in range(200):
             inf.observe(0.0)
     assert inf.slot <= 1
+
+
+# --- BOCD change detector (opt-in) over the reward stream -----------------
+def test_bocd_holds_slot_when_rewards_stay_high():
+    inf = ContextInferrer(ctx_dim=4, detector='bocd')
+    switched = any(inf.observe(1.0) for _ in range(500))
+    assert not switched
+    assert inf.slot == 0
+
+
+def test_bocd_fires_on_reward_collapse():
+    inf = ContextInferrer(ctx_dim=4, detector='bocd')
+    for _ in range(300):          # establish a high-reward run on context 0
+        inf.observe(1.0)
+    switched = any(inf.observe(0.0) for _ in range(200))   # regime collapses
+    assert switched
+    assert inf.slot == 1
+    assert float(inf.context()[1]) == 1.0
+
+
+def test_bocd_does_not_fire_during_rising_warmup():
+    # Noisy reward whose mean rises 0.2 -> 0.6 within the warmup window must not
+    # be mistaken for a changepoint (no established high run yet to collapse from).
+    torch.manual_seed(0)
+    inf = ContextInferrer(ctx_dim=4, detector='bocd', warmup=80)
+    fired = False
+    for i in range(80):
+        mean = 0.2 + 0.4 * (i / 79)            # rising 0.2 -> 0.6
+        r = 1.0 if float(torch.rand(1)) < mean else 0.0
+        fired = fired or inf.observe(r)
+    assert not fired
+    assert inf.slot == 0
+
+
+def test_bocd_default_detector_is_ema():
+    # No detector flag == current EMA behaviour, including the internal state.
+    inf = ContextInferrer(ctx_dim=4)
+    assert inf.detector == 'ema'
+    assert inf._bocd is None
+    mgr = RecognizingContextManager(ctx_dim=4, auto_detect=False)
+    assert mgr.detector == 'ema'
+    assert mgr._bocd is None
 
 
 # --- re-recognition of a returned context via reward probing --------------
