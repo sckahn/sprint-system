@@ -1,0 +1,4 @@
+# Optional deps for the real-retriever experiment (examples/experiment_real_retriever.py)
+# Core svmp package needs only torch (see requirements.txt).
+sentence-transformers>=2.2
+scikit-learn>=1.0
